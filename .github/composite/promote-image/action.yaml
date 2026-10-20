@@ -1,0 +1,21 @@
+name: Promote client image to release tag
+description: Re-tags the image built from the tagged commit with the release version
+
+inputs:
+  RELEASE_TAG:
+    description: "For example, 1.2.3"
+    required: true
+  SHA:
+    description: "Full SHA of the tagged commit"
+    required: true
+  ARCH:
+    description: "Architecture to promote (amd64 or arm64). Must match the runner's architecture."
+    required: false
+    default: amd64
+
+runs:
+  using: composite
+  steps:
+    - name: Promote image
+      shell: bash
+      run: bun run .github/scripts/src/promote-image --releaseTag "${{ inputs.RELEASE_TAG }}" --sha "${{ inputs.SHA }}" --arch "${{ inputs.ARCH }}"

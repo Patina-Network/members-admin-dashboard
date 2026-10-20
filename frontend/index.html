@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hello World Clients</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.3/dist/index.global.js" integrity="sha384-2ql948lIdLcGEE0/qxNiudyTjgauA3RDJERu5xW75kFCvSl5a9odyQYCb6tEjnmB" crossorigin="anonymous"></script>
+    <style type="text/tailwindcss">
+      form { @apply space-y-3 rounded-xl bg-white p-6 shadow-sm; }
+      input, textarea { @apply w-full rounded-lg border border-stone-300 p-2; }
+      button { @apply rounded-lg bg-emerald-800 px-4 py-2 font-semibold text-white; }
+    </style>
+  </head>
+  <body class="bg-stone-100 text-emerald-950">
+    <main class="mx-auto max-w-2xl space-y-6 p-6">
+      <h1 class="text-3xl font-bold">Hello World · Rust</h1>
+
+      <form id="hello">
+        <h2 class="text-xl font-semibold">Say hello</h2>
+        <label for="hello-name" class="sr-only">Your name</label>
+        <input id="hello-name" name="name" placeholder="Your name" />
+        <button>Say hello</button>
+        <p class="output"></p>
+      </form>
+
+      <form id="send">
+        <h2 class="text-xl font-semibold">Send a greeting</h2>
+        <label for="send-sender" class="sr-only">From</label>
+        <input id="send-sender" name="senderName" placeholder="From" />
+        <label for="send-recipient" class="sr-only">To</label>
+        <input id="send-recipient" name="recipientName" placeholder="To" />
+        <label for="send-greeting" class="sr-only">Message</label>
+        <textarea id="send-greeting" name="greeting" placeholder="Message"></textarea>
+        <button>Send greeting</button>
+        <p class="output"></p>
+      </form>
+
+      <form id="list">
+        <h2 class="text-xl font-semibold">Greetings</h2>
+        <label for="list-recipient" class="sr-only">Recipient</label>
+        <input id="list-recipient" name="recipientName" placeholder="Recipient (blank for everyone)" />
+        <button>Load greetings</button>
+        <ul class="output"></ul>
+      </form>
+
+      <section id="also-see" class="space-y-2" hidden>
+        <h2 class="text-xl font-semibold">Also see</h2>
+        <ul class="list-disc space-y-1 pl-6"></ul>
+      </section>
+    </main>
+
+    <footer class="mx-auto max-w-2xl px-6 pb-6 text-sm text-stone-500">
+      <p id="version" hidden></p>
+    </footer>
+
+    <script>
+      async function api(path, body) {
+        const res = await fetch(path, body && { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        return data;
+      }
+
+      function onSubmit(id, handler) {
+        const form = document.getElementById(id);
+        const output = form.querySelector(".output");
+        form.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          try {
+            await handler(Object.fromEntries(new FormData(form)), output);
+          } catch (err) {
+            output.textContent = err.message;
+          }
+        });
+      }
+
+      onSubmit("hello", async ({ name }, output) => {
+        const data = await api("/api/echo?name=" + encodeURIComponent(name));
+        output.textContent = data.response;
+      });
+
+      onSubmit("send", async (greeting, output) => {
+        await api("/api/greetings", greeting);
+        output.textContent = "Greeting sent.";
+      });
+
+      onSubmit("list", async ({ recipientName }, output) => {
+        const query = recipientName ? "?recipientName=" + encodeURIComponent(recipientName) : "";
+        const { replies } = await api("/api/greetings" + query);
+        output.replaceChildren(
+          ...replies.map((r) => {
+            const li = document.createElement("li");
+            li.textContent = `${r.senderName} → ${r.recipientName}: ${r.message}`;
+            return li;
+          }),
+        );
+        if (replies.length === 0) output.textContent = "No greetings yet.";
+      });
+
+      fetch("/version")
+        .then((res) => (res.ok ? res.text() : Promise.reject()))
+        .then((version) => {
+          const el = document.getElementById("version");
+          el.textContent = "Version " + version;
+          el.hidden = false;
+        })
+        .catch(() => {});
+
+      fetch("/urls")
+        .then((res) => (res.ok ? res.json() : Promise.reject()))
+        .then((urls) => {
+          const links = urls.filter((url) => /^https?:\/\//i.test(url));
+          if (links.length === 0) return;
+          const section = document.getElementById("also-see");
+          section.querySelector("ul").replaceChildren(
+            ...links.map((url) => {
+              const li = document.createElement("li");
+              const a = document.createElement("a");
+              a.href = url;
+              a.textContent = url;
+              a.className = "text-emerald-800 underline";
+              li.append(a);
+              return li;
+            }),
+          );
+          section.hidden = false;
+        })
+        .catch(() => {});
+    </script>
+  </body>
+</html>

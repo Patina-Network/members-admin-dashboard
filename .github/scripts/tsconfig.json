@@ -1,0 +1,9 @@
+{
+  "extends": "@Patina-Network/cicd-config/tsconfig",
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["./src/**/*", "oxfmt.config.ts", "oxlint.config.ts"]
+}

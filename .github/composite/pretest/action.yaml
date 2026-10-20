@@ -1,0 +1,9 @@
+name: Pre-test
+description: Run backend format, lint, and compile checks (no tests)
+
+runs:
+  using: composite
+  steps:
+    - name: Run pre-test checks
+      shell: bash
+      run: bun run .github/scripts/src/pretest

@@ -1,0 +1,29 @@
+{
+  "name": "scripts",
+  "version": "1.0.0",
+  "private": true,
+  "description": "@patina-network/hello-world-grpc-client-rust CI Scripts",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun run typecheck && bun run fmt && bun run lint",
+    "fix": "bun run lint:fix && bun run fmt:fix",
+    "lint": "oxlint .",
+    "lint:fix": "oxlint . --fix",
+    "fmt": "oxfmt --check .",
+    "fmt:fix": "oxfmt --write ."
+  },
+  "dependencies": {
+    "@tahminator/pipeline": "^1.0.96",
+    "yargs": "^18.0.0"
+  },
+  "devDependencies": {
+    "@Patina-Network/cicd-config": "github:Patina-Network/cicd-config#a54b3e5d8b373be5254ce1cec44cfabdec1d5189",
+    "@types/bun": "^1.4.2",
+    "@types/yargs": "^17.0.35",
+    "oxfmt": "^0.72.0",
+    "oxlint": "^1.87.0",
+    "oxlint-tsgolint": "^7.0.2003",
+    "typescript": "7"
+  }
+}

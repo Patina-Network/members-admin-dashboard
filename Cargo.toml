@@ -1,0 +1,24 @@
+[package]
+name = "hello-world-client-rust"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hello-world-grpc-service = { version = "=1.0.4", registry = "patina" }
+anyhow = "1"
+axum = { version = "0.8", features = ["macros"] }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "time"] }
+tonic = { version = "0.14", features = ["tls-native-roots", "tls-ring"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+metrics-exporter-prometheus = "0.18.3"
+metrics-process = "2.4.3"
+tower-http = { version = "0.7.1", features = ["catch-panic"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+tokio-stream = { version = "0.1", features = ["net"] }
+serde_json = "1"
+prost-types = "0.14"

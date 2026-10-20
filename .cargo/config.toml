@@ -1,0 +1,2 @@
+[registries.patina]
+index = "sparse+https://pkg.vpn.patinanetwork.org/cargo/cargo/"
