@@ -23,3 +23,29 @@ where
         .map(Response::into_inner)
         .map_err(Into::into)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn call_sets_deadline_and_returns_response_body() {
+        let result = call(Duration::from_secs(1), "input", |request| async move {
+            assert!(request.metadata().contains_key("grpc-timeout"));
+            assert_eq!(request.into_inner(), "input");
+            Ok(Response::new("output"))
+        })
+        .await
+        .unwrap();
+        assert_eq!(result, "output");
+    }
+
+    #[tokio::test]
+    async fn call_times_out_even_when_upstream_does_not_respond() {
+        let result = call(Duration::from_millis(1), (), |_| {
+            std::future::pending::<Result<Response<()>, Status>>()
+        })
+        .await;
+        assert!(matches!(result, Err(UpstreamError::Timeout)));
+    }
+}
