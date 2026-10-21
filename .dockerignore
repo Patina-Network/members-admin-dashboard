@@ -1,3 +1,5 @@
 .git
 target
 .github
+frontend/node_modules
+frontend/dist
