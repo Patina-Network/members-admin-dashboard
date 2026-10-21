@@ -1,10 +1,8 @@
-Put service-specific React Query hooks here, following CodeBloom's
-`lib/api/queries/<service>/index.ts` structure. Components consume hooks;
-they should not define `useQuery` or `useMutation` inline.
+Put service-specific React Query hooks here. Components consume hooks.
+They should not define `useQuery` or `useMutation` inline.
 
-Use the generated types in `@/lib/api/types/schema`. Add shared typed request
-helpers in `lib/api/common` following CodeBloom's `ApiURL` pattern when adding
-the first feature endpoints. No requests are wired into the static scaffold.
+Call the backend with the generated SDK and query helpers in
+`@/lib/api/generated`. Do not add a custom request helper.
 
-With the Rust backend running on port 8080, regenerate types using
-`pnpm --dir frontend generate`. Never edit `schema.ts` manually.
+With the Rust backend running on port 8080, regenerate using
+`pnpm --dir frontend generate`. Never edit `src/lib/api/generated` manually.

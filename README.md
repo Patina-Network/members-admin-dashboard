@@ -73,24 +73,24 @@ member CRUD, pagination/counts, and CSV import remain separate feature tickets.
 
 ## HTTP API types
 
-Follow CodeBloom's frontend-driven generation workflow. Start the Rust backend
-on port 8080, then run:
+Start the Rust backend on port 8080, then run:
 
 ```sh
 pnpm --dir frontend generate
 ```
 
-This reads the running backend's OpenAPI endpoint, `/api/openapi.json`, using
-`openapi-typescript` with CodeBloom's generation options and formats the result.
-Commit `frontend/src/lib/api/types/schema.ts`; do not edit it manually.
+This reads `/api/openapi.json` with `@hey-api/openapi-ts` and writes
+`frontend/src/lib/api/generated`. Commit that folder. Do not edit it
+manually.
 
 For a new endpoint, add `utoipa::path` to the Rust HTTP handler and
 `utoipa::ToSchema` to request/response types. Register the handler in both
 `src/http/openapi.rs` and the Axum router, restart the backend, then regenerate.
-Only the existing `/version` response and shared error schema are defined now.
-Feature tickets can add their request helpers under `lib/api/common` following
-CodeBloom's `ApiURL` pattern, and React Query hooks under `lib/api/queries`.
-There are no frontend API calls in this static scaffold.
+Only `/version` and `ErrorBody` are defined now.
+
+The generated SDK and TanStack Query helpers live in that folder. Same-origin
+`baseUrl` is set in `frontend/src/lib/api/hey-api.ts`. Put service hooks under
+`lib/api/queries`. There are no frontend API calls in this scaffold yet.
 
 ## Rust conventions
 
