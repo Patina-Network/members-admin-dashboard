@@ -36,6 +36,10 @@ jobs:
           RUST_TOOLCHAIN: "1.99.0"
           RUST_COMPONENTS: "clippy, rustfmt"
           CARGO_PACKAGES: cargo-tarpaulin
+          INSTALL_NPM: true
+          NODE_VERSION: "22"
+          INSTALL_PNPM: true
+          PNPM_VERSION: "10.24.0"
 
       - name: Run pre-test checks
         uses: ./.github/composite/pretest

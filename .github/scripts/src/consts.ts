@@ -1,6 +1,6 @@
 export const GITHUB_OWNER = "Patina-Network";
-export const GITHUB_REPOSITORY = "hello-world-grpc-client-rust";
-const DOCKER_REPOSITORY = "hello-world-client-rust";
+export const GITHUB_REPOSITORY = "members-admin-dashboard";
+const DOCKER_REPOSITORY = "members-admin-dashboard";
 
 /** Repo under GITHUB_OWNER that `deploy` opens image-tag PRs against. */
 export const K8S_MANIFESTS_REPOSITORY = "k8s-manifests";

@@ -1,9 +1,14 @@
 name: Pre-test
-description: Run backend format, lint, and compile checks (no tests)
+description: Check frontend and backend formatting and compilation
 
 runs:
   using: composite
   steps:
+    - name: Check frontend and build embedded assets
+      shell: bash
+      run: |
+        pnpm --dir frontend install --frozen-lockfile
+        pnpm --dir frontend test
     - name: Run pre-test checks
       shell: bash
       run: bun run .github/scripts/src/pretest
