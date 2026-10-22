@@ -3,3 +3,4 @@ dist
 coverage
 pnpm-lock.yaml
 src/lib/api/generated
+openapi.json

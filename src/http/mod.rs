@@ -16,6 +16,8 @@ use axum::{
 };
 use serde::Serialize;
 use tower_http::catch_panic::CatchPanicLayer;
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
 use crate::http::state::AppState;
 
@@ -27,12 +29,17 @@ pub struct ErrorBody {
 
 pub fn app(state: AppState) -> Router {
     let api = Router::new().fallback(not_found);
-    Router::new()
+    let mut router = Router::new();
+    if state.config.enable_documentation {
+        router = router.merge(
+            SwaggerUi::new("/api/swagger-ui").url("/api/openapi.json", openapi::ApiDoc::openapi()),
+        );
+    }
+    router
         .route("/livez", get(health::live))
         .route("/readyz", get(health::ready))
         .route("/metrics", get(metrics::metrics))
         .route("/version", get(version::version))
-        .route("/api/openapi.json", get(openapi::document))
         .nest("/api", api)
         .fallback(spa::spa)
         .layer(CatchPanicLayer::custom(panic_response))

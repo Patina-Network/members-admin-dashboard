@@ -73,19 +73,35 @@ member CRUD, pagination/counts, and CSV import remain separate feature tickets.
 
 ## HTTP API types
 
-Start the Rust backend on port 8080, then run:
+Client generation runs automatically before frontend development, typechecking,
+and builds, including CI. To regenerate explicitly:
 
 ```sh
 pnpm --dir frontend generate
 ```
 
-This reads `/api/openapi.json` with `@hey-api/openapi-ts` and writes
-`frontend/src/lib/api/generated`. Commit that folder. Do not edit it
-manually.
+This compiles the `export-openapi` Rust binary and generates the Hey API client
+from its local schema, without starting a server or contacting the upstream.
+Rust and private Cargo registry access are required. Both `frontend/openapi.json`
+and `frontend/src/lib/api/generated` are ignored by Git; do not edit or commit
+these generated files. Docker exports the schema in a Rust stage before building
+the frontend. The exporter creates an empty `frontend/dist` directory on a fresh
+clone to satisfy `rust-embed`; the frontend build then fills it before the final
+server build.
 
-For a new endpoint, add `utoipa::path` to the Rust HTTP handler and
-`utoipa::ToSchema` to request/response types. Register the handler in both
-`src/http/openapi.rs` and the Axum router, restart the backend, then regenerate.
+Swagger UI is available at `/api/swagger-ui/`, with the schema at
+`/api/openapi.json`. Set `ENABLE_DOCUMENTATION=false` to disable both routes
+(default: `true`). Offline client generation works regardless of this setting.
+
+For a new endpoint, return an explicit enum deriving `utoipa::IntoResponses`
+and implementing Axum's `IntoResponse`, and reference it with
+`responses(MyResponse)` in `utoipa::path`. Use `VersionResponse` as the example.
+Add success and failure variants for the states the endpoint actually returns,
+and derive `utoipa::ToSchema` for body types. Register the handler in both
+`src/http/openapi.rs` and the Axum router, then regenerate.
+The enum shares payload types with the documentation and makes response matching
+exhaustive. Status codes and serialization in `IntoResponse` still need to agree
+with the annotations; Utoipa does not check that implementation automatically.
 Only `/version` and `ErrorBody` are defined now.
 
 The generated SDK and TanStack Query helpers live in that folder. Same-origin
@@ -99,6 +115,8 @@ request/response types, and the generated client in `AppState`. Use
 `grpc::call` for outgoing calls so both the gRPC deadline and local timeout apply.
 Use `UpstreamError` for consistent HTTP error responses and server-side logging.
 Keep protobuf types at the gRPC boundary and convert them to HTTP response types.
+Test controllers and repositories directly with unit tests; avoid full-router HTTP
+tests for the scaffold.
 
 The generated client is pinned to stable `members-grpc-service` 1.0.0 from the
 Patina registry. Feature tickets must update it when they require a newer
@@ -111,6 +129,7 @@ published member API; no member RPCs are invoked by the setup scaffold.
 | `MEMBERS_ADMIN_SERVICE_GRPC_HOST` | `members-admin-grpc-service:50051` | Upstream host and port |
 | `MEMBERS_ADMIN_SERVICE_GRPC_TLS` | `false` | Enable TLS with native roots |
 | `MEMBERS_ADMIN_SERVICE_GRPC_TIMEOUT_MS` | `3000` | Connection and request timeout |
+| `ENABLE_DOCUMENTATION` | `true` | Serve Swagger UI and OpenAPI routes |
 | `HTTP_PORT` | `8080` | HTTP port; binds `0.0.0.0` |
 | `VERSION` | unset | `/version` returns this, or `N/A` |
 | `ENVIRONMENT` | unset | `production`/`staging` enables JSON logs |

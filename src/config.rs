@@ -9,6 +9,7 @@ pub struct Config {
     pub members_admin_service_grpc_tls: bool,
     pub members_admin_service_grpc_timeout: Duration,
     pub http_port: u16,
+    pub enable_documentation: bool,
     pub version: Option<String>,
 }
 
@@ -19,6 +20,7 @@ impl Config {
             members_admin_service_grpc_tls = self.members_admin_service_grpc_tls,
             members_admin_service_grpc_timeout = ?self.members_admin_service_grpc_timeout,
             http_port = self.http_port,
+            enable_documentation = self.enable_documentation,
             version = %self.version.clone().unwrap_or_else(|| "N/A".into()),
             "loaded config"
         );
@@ -44,6 +46,9 @@ impl Config {
                 .and_then(|s| s.parse().ok())
                 .filter(|port| (1..=65535).contains(port))
                 .unwrap_or(8080),
+            enable_documentation: var("ENABLE_DOCUMENTATION")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(true),
             version: var("VERSION"),
         }
     }
@@ -92,6 +97,7 @@ mod tests {
             Duration::from_millis(3000)
         );
         assert_eq!(config.http_port, 8080);
+        assert!(config.enable_documentation);
     }
 
     #[test]
@@ -101,6 +107,7 @@ mod tests {
             ("MEMBERS_ADMIN_SERVICE_GRPC_TLS", "true"),
             ("MEMBERS_ADMIN_SERVICE_GRPC_TIMEOUT_MS", "30000"),
             ("HTTP_PORT", "9000"),
+            ("ENABLE_DOCUMENTATION", "false"),
         ]);
 
         assert_eq!(
@@ -113,12 +120,14 @@ mod tests {
             Duration::from_millis(30000)
         );
         assert_eq!(config.http_port, 9000);
+        assert!(!config.enable_documentation);
     }
 
     #[test]
     fn falls_back_to_defaults_on_invalid_values() {
         for (key, value) in [
             ("MEMBERS_ADMIN_SERVICE_GRPC_TLS", "yes"),
+            ("ENABLE_DOCUMENTATION", "invalid"),
             ("MEMBERS_ADMIN_SERVICE_GRPC_TIMEOUT_MS", "fast"),
             ("HTTP_PORT", "70000"),
             ("HTTP_PORT", "http"),
@@ -126,6 +135,7 @@ mod tests {
             let config = config_from(&[(key, value)]);
 
             assert!(!config.members_admin_service_grpc_tls, "{key}={value}");
+            assert!(config.enable_documentation, "{key}={value}");
             assert_eq!(
                 config.members_admin_service_grpc_timeout,
                 Duration::from_millis(3000),

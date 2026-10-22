@@ -60,6 +60,11 @@ jobs:
         with:
           SECRETS: ${{ toJSON(secrets) }}
           LINT_CI: true
+          HEADSCALE_ADDRESS: ${{ secrets.HEADSCALE_ADDRESS }}
+          HEADSCALE_USER: ${{ secrets.HEADSCALE_USER }}
+          HEADSCALE_PREAUTHKEY: ${{ secrets.HEADSCALE_PREAUTHKEY }}
+          INSTALL_RUST: true
+          RUST_TOOLCHAIN: "1.99.0"
           INSTALL_NPM: true
           NODE_VERSION: "22"
           INSTALL_PNPM: true

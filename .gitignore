@@ -4,3 +4,6 @@ target/
 frontend/node_modules/
 frontend/dist/
 frontend/coverage/
+frontend/src/lib/api/generated/
+frontend/openapi.json
+openapi-ts-error-*.log
