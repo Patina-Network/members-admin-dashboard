@@ -1,0 +1,11 @@
+name: Frontend Test
+description: Run frontend tests
+
+runs:
+  using: composite
+  steps:
+    - name: Run frontend tests
+      shell: bash
+      run: |
+        pnpm --dir frontend install --frozen-lockfile
+        pnpm --dir frontend test

@@ -24,6 +24,11 @@ updates:
     patterns: ["*"]
     cooldown: { default-days: 7 }
     multi-ecosystem-group: main
+  - package-ecosystem: npm
+    directory: /frontend
+    patterns: ["*"]
+    cooldown: { default-days: 7 }
+    multi-ecosystem-group: main
   # cicd
   - package-ecosystem: github-actions
     directory: /

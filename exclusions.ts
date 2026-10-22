@@ -1,5 +1,5 @@
 /**
- * See https://github.com/Patina-Network/hello-world-grpc-client-rust/blob/main/.github/scripts/src/test/index.ts
+ * See https://github.com/Patina-Network/members-admin-dashboard/blob/main/.github/scripts/src/test/index.ts
  * for test exclusion usages.
  */
 
@@ -12,4 +12,5 @@ export const exclusions = [
   `${baseDir}/http/metrics.rs`,
   `${baseDir}/http/version.rs`,
   `${baseDir}/http/health.rs`,
+  `${baseDir}/http/spa.rs`,
 ];

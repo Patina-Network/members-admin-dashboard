@@ -36,6 +36,10 @@ jobs:
           RUST_TOOLCHAIN: "1.99.0"
           RUST_COMPONENTS: "clippy, rustfmt"
           CARGO_PACKAGES: cargo-tarpaulin
+          INSTALL_NPM: true
+          NODE_VERSION: "22"
+          INSTALL_PNPM: true
+          PNPM_VERSION: "10.24.0"
 
       - name: Run pre-test checks
         uses: ./.github/composite/pretest
@@ -43,10 +47,36 @@ jobs:
       - name: Run tests
         uses: ./.github/composite/test
 
+  frontendTest:
+    name: Frontend Tests
+    runs-on: ubuntu-26.04
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Pipeline
+        uses: tahminator/pipeline/actions/setup@52eb2a0451daba94989db6a6fa232e689144aa50 # 1.0.96
+        with:
+          SECRETS: ${{ toJSON(secrets) }}
+          LINT_CI: true
+          HEADSCALE_ADDRESS: ${{ secrets.HEADSCALE_ADDRESS }}
+          HEADSCALE_USER: ${{ secrets.HEADSCALE_USER }}
+          HEADSCALE_PREAUTHKEY: ${{ secrets.HEADSCALE_PREAUTHKEY }}
+          INSTALL_RUST: true
+          RUST_TOOLCHAIN: "1.99.0"
+          INSTALL_NPM: true
+          NODE_VERSION: "22"
+          INSTALL_PNPM: true
+          PNPM_VERSION: "10.24.0"
+
+      - name: Run frontend tests
+        uses: ./.github/composite/frontend-test
+
   buildImage:
     name: Build ${{ github.event_name == 'pull_request' && 'staging' || 'production' }} image (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
-    needs: [backendTest]
+    needs: [backendTest, frontendTest]
 
     if: >-
       github.ref_name == 'main' ||

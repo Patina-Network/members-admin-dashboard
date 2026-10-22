@@ -1,0 +1,13 @@
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-radius: var(--mantine-radius-lg);
+  gap: 1rem;
+}
+
+.header > :nth-child(2) {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+}

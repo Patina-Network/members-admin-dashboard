@@ -66,7 +66,7 @@ async function main() {
       prId: Number(prId),
       owner: GITHUB_OWNER,
       repository: GITHUB_REPOSITORY,
-      message: `The rust client image has been uploaded to https://hub.docker.com/r/${image}/tags under the following tags:
+      message: `The members-admin-dashboard image has been uploaded to https://hub.docker.com/r/${image}/tags under the following tags:
 
 ${tags.map((t) => `- \`${repository}:${t}\``).join("\n")}
 `,

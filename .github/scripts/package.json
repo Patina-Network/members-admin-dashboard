@@ -2,7 +2,7 @@
   "name": "scripts",
   "version": "1.0.0",
   "private": true,
-  "description": "@patina-network/hello-world-grpc-client-rust CI Scripts",
+  "description": "@patina-network/members-admin-dashboard CI Scripts",
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",

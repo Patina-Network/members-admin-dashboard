@@ -1,9 +1,9 @@
 use anyhow::Context;
-use hello_world_client_rust::{
+use members_admin_dashboard::{
     config::Config,
     http::{app, state::AppState},
 };
-use hello_world_grpc_service::helloworld::greeter_service_client::GreeterServiceClient;
+use members_grpc_service::members::admin::members_admin_service_client::MembersAdminServiceClient;
 use metrics_exporter_prometheus::PrometheusBuilder;
 
 fn init_tracing() {
@@ -42,12 +42,12 @@ async fn main() -> anyhow::Result<()> {
     let channel = config.grpc_endpoint()?.connect_lazy();
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", config.http_port)).await?;
     let state = AppState {
-        client: GreeterServiceClient::new(channel),
+        client: MembersAdminServiceClient::new(channel),
         prometheus_handle,
         sys_collector,
         config: config.clone(),
     };
-    tracing::info!(address=%listener.local_addr()?,"HTTP server started");
+    tracing::info!(address=%listener.local_addr()?, "HTTP server started");
     axum::serve(listener, app(state))
         .with_graceful_shutdown(shutdown())
         .await?;

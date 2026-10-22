@@ -1,5 +1,5 @@
 name: Test
-description: Run the backend test suite
+description: Run backend tests
 
 runs:
   using: composite

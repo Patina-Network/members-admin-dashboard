@@ -1,46 +1,47 @@
+pub mod openapi;
 pub mod state;
 
 mod health;
-mod json;
 mod metrics;
-mod route;
-mod urls;
+mod spa;
 mod version;
-
-pub use route::{echo, greetings};
 
 use std::any::Any;
 
 use axum::{
     Json, Router,
     http::StatusCode,
-    response::{Html, IntoResponse, Response},
+    response::{IntoResponse, Response},
     routing::get,
 };
 use serde::Serialize;
 use tower_http::catch_panic::CatchPanicLayer;
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
 use crate::http::state::AppState;
 
 /// JSON body of every `/api` error response; the frontend reads `error`.
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct ErrorBody {
     pub error: &'static str,
 }
 
 pub fn app(state: AppState) -> Router {
-    let api = Router::new()
-        .route("/echo", get(echo::echo))
-        .route("/greetings", get(greetings::list).post(greetings::send))
-        .fallback(not_found);
-    Router::new()
+    let api = Router::new().fallback(not_found);
+    let mut router = Router::new();
+    if state.config.enable_documentation {
+        router = router.merge(
+            SwaggerUi::new("/api/swagger-ui").url("/api/openapi.json", openapi::ApiDoc::openapi()),
+        );
+    }
+    router
         .route("/livez", get(health::live))
         .route("/readyz", get(health::ready))
         .route("/metrics", get(metrics::metrics))
         .route("/version", get(version::version))
-        .route("/urls", get(urls::urls))
         .nest("/api", api)
-        .fallback(index)
+        .fallback(spa::spa)
         .layer(CatchPanicLayer::custom(panic_response))
         .with_state(state)
 }
@@ -77,9 +78,4 @@ impl IntoResponse for NotFound {
 
 async fn not_found() -> NotFound {
     NotFound
-}
-
-/// The whole UI, baked into the binary at compile time.
-async fn index() -> Html<&'static str> {
-    Html(include_str!("../../frontend/index.html"))
 }
