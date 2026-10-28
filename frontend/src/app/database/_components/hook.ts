@@ -1,7 +1,7 @@
 import { useForm } from "@mantine/form";
 
 import type { MemberFormValues } from "@/app/database/_components/types";
-import type { NewMember } from "@/lib/api/generated/types.gen";
+import type { MemberDetails, NewMember } from "@/lib/api/generated/types.gen";
 
 function validateSocialUsername(value: string) {
   return /[\s/@?#]/u.test(value.trim()) ?
@@ -24,9 +24,21 @@ const initialValues: MemberFormValues = {
   role: "",
 };
 
-export const useMemberForm = () => {
-  return useForm<MemberFormValues, (values: MemberFormValues) => NewMember>({
-    initialValues,
+export const useMemberForm = (values?: Partial<MemberFormValues>) => {
+  const form = useForm<
+    MemberFormValues,
+    (values: MemberFormValues) => NewMember
+  >({
+    initialValues: { ...initialValues, ...values },
+    onValuesChange: (current, previous) => {
+      if (
+        current.discordId !== previous.discordId ||
+        current.discordUsername !== previous.discordUsername
+      ) {
+        form.clearFieldError("discordId");
+        form.clearFieldError("discordUsername");
+      }
+    },
     validate: {
       discordId: (value, values) => {
         const id = value.trim();
@@ -78,5 +90,30 @@ export const useMemberForm = () => {
       profile: values.profile.trim() || null,
       role: values.role || null,
     }),
+  });
+  return form;
+};
+
+export const useEditMemberForm = (member: MemberDetails) => {
+  const date = member.joined_at ? new Date(member.joined_at) : null;
+  const joinedAt =
+    date ?
+      new Date(date.getTime() - date.getTimezoneOffset() * 60000)
+        .toISOString()
+        .slice(0, 19)
+    : "";
+  return useMemberForm({
+    email: member.email,
+    firstName: member.first_name,
+    lastName: member.last_name,
+    joinedAt,
+    linkedinUsername: member.linkedin_username ?? "",
+    instagramUsername: member.instagram_username ?? "",
+    career: member.career ?? "",
+    industry: member.industry ?? "",
+    profile: member.profile ?? "",
+    role: member.role ?? "",
+    discordId: member.discord_id ?? "",
+    discordUsername: member.discord_username ?? "",
   });
 };

@@ -37,6 +37,10 @@ pub fn app(state: AppState) -> Router {
         .route("/auth/callback", get(auth::callback))
         .route("/auth/session", get(auth::current_session))
         .route("/auth/logout", post(auth::logout))
+        .route(
+            "/members/{member_id}",
+            get(members::details).put(members::update),
+        )
         .fallback(not_found);
     let mut router = Router::new();
     if state.config.enable_documentation {

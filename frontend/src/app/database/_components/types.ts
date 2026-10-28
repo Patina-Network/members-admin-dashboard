@@ -1,4 +1,9 @@
-import type { NewMember } from "@/lib/api/generated/types.gen";
+import type { useMemberForm } from "@/app/database/_components/hook";
+import type {
+  Member,
+  MemberDetails,
+  NewMember,
+} from "@/lib/api/generated/types.gen";
 
 export type AddMembersView = "choose" | "one" | "bulk-upload";
 
@@ -20,4 +25,21 @@ export type MemberFormValues = {
   industry: string;
   profile: string;
   role: NonNullable<NewMember["role"]> | "";
+};
+
+export type EditMemberModalProps = {
+  member: Member;
+  onClose: () => void;
+};
+
+export type EditMemberFormProps = {
+  member: MemberDetails;
+  onClose: () => void;
+};
+
+export type MemberFieldsProps = {
+  form: ReturnType<typeof useMemberForm>;
+  pending: boolean;
+  details: string | null;
+  setDetails: (value: string | null) => void;
 };

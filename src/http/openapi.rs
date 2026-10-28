@@ -9,16 +9,20 @@ use utoipa::OpenApi;
         super::auth::login,
         super::auth::callback,
         super::auth::current_session,
-        super::auth::logout
+        super::auth::logout,
+        super::members::update,
+        super::members::details
     ),
     components(schemas(
         super::ErrorBody,
         super::members::Member,
+        super::members::MemberDetails,
         super::members::MemberList,
         super::members::NewMember,
         super::auth::response::SessionBody,
         super::auth::response::LogoutBody,
-        crate::auth::session::User
+        crate::auth::session::User,
+        super::members::MemberUpdate
     ))
 )]
 pub struct ApiDoc;
