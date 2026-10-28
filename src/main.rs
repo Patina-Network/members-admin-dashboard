@@ -1,5 +1,6 @@
 use anyhow::Context;
 use members_admin_dashboard::{
+    auth::{config::AuthConfig, provider::AzureProvider, session::with_sessions},
     config::Config,
     http::{app, state::AppState},
 };
@@ -39,6 +40,12 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::from_env()?;
     config.log();
+    let auth_config = AuthConfig::from_env()?;
+    let auth = auth_config
+        .clone()
+        .map(AzureProvider::new)
+        .transpose()?
+        .map(std::sync::Arc::new);
     let channel = config.grpc_endpoint()?.connect_lazy();
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", config.http_port)).await?;
     let state = AppState {
@@ -46,9 +53,11 @@ async fn main() -> anyhow::Result<()> {
         prometheus_handle,
         sys_collector,
         config: config.clone(),
+        auth,
     };
     tracing::info!(address=%listener.local_addr()?, "HTTP server started");
-    axum::serve(listener, app(state))
+    let router = with_sessions(app(state), auth_config.as_ref());
+    axum::serve(listener, router)
         .with_graceful_shutdown(shutdown())
         .await?;
     Ok(())

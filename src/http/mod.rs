@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod openapi;
 pub mod state;
 
@@ -11,8 +12,9 @@ use std::any::Any;
 use axum::{
     Json, Router,
     http::StatusCode,
+    middleware,
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use serde::Serialize;
 use tower_http::catch_panic::CatchPanicLayer;
@@ -28,7 +30,12 @@ pub struct ErrorBody {
 }
 
 pub fn app(state: AppState) -> Router {
-    let api = Router::new().fallback(not_found);
+    let api = Router::new()
+        .route("/auth/login", get(auth::login))
+        .route("/auth/callback", get(auth::callback))
+        .route("/auth/session", get(auth::current_session))
+        .route("/auth/logout", post(auth::logout))
+        .fallback(not_found);
     let mut router = Router::new();
     if state.config.enable_documentation {
         router = router.merge(
@@ -40,8 +47,13 @@ pub fn app(state: AppState) -> Router {
         .route("/readyz", get(health::ready))
         .route("/metrics", get(metrics::metrics))
         .route("/version", get(version::version))
+        .route("/oauth2/callback", get(auth::callback))
         .nest("/api", api)
         .fallback(spa::spa)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::guard::protect,
+        ))
         .layer(CatchPanicLayer::custom(panic_response))
         .with_state(state)
 }
