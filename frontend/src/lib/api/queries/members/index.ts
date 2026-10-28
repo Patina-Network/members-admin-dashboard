@@ -12,6 +12,7 @@ import {
   listQueryKey,
 } from "@/lib/api/generated/@tanstack/react-query.gen";
 import {
+  archive,
   create,
   currentSession,
   details,
@@ -80,7 +81,7 @@ async function fetchMembers(signal: AbortSignal) {
   return result.data;
 }
 
-async function getAdminCsrfToken(action: "adding" | "updating") {
+async function getAdminCsrfToken(action: "adding" | "updating" | "archiving") {
   const { data: session } = await currentSession();
   if (!session) {
     throw new Error("Unable to check your session. Please try again.");
@@ -163,6 +164,43 @@ export const useUpdateMemberMutation = () => {
           }
         : current,
       );
+      void queryClient.invalidateQueries({ queryKey: membersKey });
+    },
+  });
+};
+
+export const useArchiveMemberMutation = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    retry: false,
+    mutationFn: async (memberId: number) => {
+      const uncertain =
+        "Could not confirm whether the member was archived. Reload before trying again.";
+      const csrfToken = await getAdminCsrfToken("archiving");
+      const result = await archive({
+        path: { member_id: memberId },
+        headers: { "X-CSRF-Token": csrfToken },
+      }).catch(() => {
+        throw new Error(uncertain);
+      });
+      if (result.response?.status !== 204) {
+        throw new Error(
+          !result.response || result.response.status >= 500 ?
+            uncertain
+          : (result.error?.error ?? "Unable to archive member."),
+        );
+      }
+      return memberId;
+    },
+    onSuccess: async (memberId) => {
+      await queryClient.cancelQueries({ queryKey: membersKey });
+      queryClient.setQueryData<MemberList>(membersKey, (current) => {
+        if (!current) return current;
+        const members = current.members.filter(
+          (row) => row.member_id !== memberId,
+        );
+        return { members, total: members.length };
+      });
       void queryClient.invalidateQueries({ queryKey: membersKey });
     },
   });

@@ -314,6 +314,58 @@ where
     ))
 }
 
+#[derive(Debug, utoipa::IntoResponses)]
+pub enum ArchiveResponse {
+    #[response(status = 204, description = "Member archived, not permanently deleted")]
+    Success,
+}
+
+impl IntoResponse for ArchiveResponse {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Success => StatusCode::NO_CONTENT.into_response(),
+        }
+    }
+}
+
+#[utoipa::path(delete, path = "/api/members/{member_id}", params(("member_id" = i32, Path)), responses(ArchiveResponse, UpstreamError))]
+pub async fn archive(
+    State(state): State<AppState>,
+    Path(member_id): Path<i32>,
+) -> Result<ArchiveResponse, UpstreamError> {
+    let mut client = state.client.clone();
+    archive_with(
+        member_id,
+        state.config.members_admin_service_grpc_timeout,
+        |request| async move { client.archive_member(request).await },
+    )
+    .await
+}
+
+async fn archive_with<F, Fut>(
+    member_id: i32,
+    timeout: Duration,
+    rpc: F,
+) -> Result<ArchiveResponse, UpstreamError>
+where
+    F: FnOnce(tonic::Request<members::admin::ArchiveMemberRequest>) -> Fut,
+    Fut: Future<
+        Output = Result<tonic::Response<members::admin::ArchiveMemberResponse>, tonic::Status>,
+    >,
+{
+    if member_id <= 0 {
+        return Err(UpstreamError::InvalidArgument);
+    }
+    let response = grpc::call_admin(
+        timeout,
+        members::admin::ArchiveMemberRequest { member_id },
+        rpc,
+    )
+    .await?;
+    response.member.ok_or(UpstreamError::Failed)?;
+    Ok(ArchiveResponse::Success)
+}
+
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct Member {
     member_id: i32,
@@ -567,6 +619,44 @@ mod tests {
     use members_grpc_service::members::{self, admin::SensitiveMember};
 
     use super::{CreateMemberRequest, Member, NewMember, UpstreamError, collect_members};
+
+    #[tokio::test]
+    async fn archive_validates_id_and_forwards_admin_metadata() {
+        for id in [0, -1] {
+            let result = super::archive_with(id, Duration::from_secs(1), |_| async {
+                panic!("invalid IDs must not reach gRPC")
+            })
+            .await;
+            assert!(matches!(result, Err(UpstreamError::InvalidArgument)));
+        }
+        for reply in [0, 1, 2] {
+            let result = super::archive_with(42, Duration::from_secs(1), |request| async move {
+                assert_eq!(request.metadata().get("profile").unwrap(), "core_admin");
+                assert!(request.metadata().contains_key("grpc-timeout"));
+                assert_eq!(request.into_inner().member_id, 42);
+                if reply == 2 {
+                    return Err(tonic::Status::not_found("private details"));
+                }
+                Ok(tonic::Response::new(
+                    members::admin::ArchiveMemberResponse {
+                        member: (reply == 0).then(|| SensitiveMember {
+                            member_id: 42,
+                            ..Default::default()
+                        }),
+                    },
+                ))
+            })
+            .await;
+            match reply {
+                0 => assert_eq!(
+                    axum::response::IntoResponse::into_response(result.unwrap()).status(),
+                    axum::http::StatusCode::NO_CONTENT
+                ),
+                1 => assert!(matches!(result, Err(UpstreamError::Failed))),
+                _ => assert!(result.is_err()),
+            }
+        }
+    }
 
     fn new_member() -> NewMember {
         NewMember {
