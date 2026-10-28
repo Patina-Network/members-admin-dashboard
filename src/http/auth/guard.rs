@@ -83,6 +83,7 @@ pub async fn protect(
     let path = request.uri().path();
     let database = is_database(path);
     let api = path == "/api" || path.starts_with("/api/");
+    let callback = path == "/oauth2/callback";
     let mut response = if database || (api && !is_public_api(path)) {
         match authorize(
             &session,
@@ -105,7 +106,7 @@ pub async fn protect(
     } else {
         next.run(request).await
     };
-    if api || database {
+    if api || database || callback {
         response
             .headers_mut()
             .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));

@@ -53,8 +53,6 @@ type AzureClient = Client<
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct AzureClaims {
     tid: String,
-    #[serde(default)]
-    roles: Vec<String>,
 }
 impl AdditionalClaims for AzureClaims {}
 
@@ -138,6 +136,11 @@ impl AzureProvider {
         let now = OffsetDateTime::now_utc().unix_timestamp();
         let expires_at = claims.expiration().timestamp().min(now + 3600);
         ensure!(expires_at > now, "expired Azure login");
+        let is_admin = self.config.allows_email(
+            claims
+                .preferred_username()
+                .map(|username| username.as_str()),
+        );
         Ok(Principal {
             user: User {
                 id: claims.subject().as_str().to_owned(),
@@ -147,10 +150,7 @@ impl AzureProvider {
                     .map(|n| n.as_str())
                     .unwrap_or("Member")
                     .to_owned(),
-                is_admin: claims
-                    .additional_claims()
-                    .roles
-                    .contains(&self.config.admin_role),
+                is_admin,
             },
             csrf_token: CsrfToken::new_random().secret().clone(),
             expires_at,
@@ -163,8 +163,8 @@ mod tests {
     use super::*;
     use chrono::{Duration, Utc};
     use openidconnect::{
-        Audience, ClientSecret, IdTokenClaims, JsonWebKeySet, PrivateSigningKey, StandardClaims,
-        SubjectIdentifier,
+        Audience, ClientSecret, EndUserEmail, EndUserUsername, IdTokenClaims, JsonWebKeySet,
+        PrivateSigningKey, StandardClaims, SubjectIdentifier,
     };
     use rsa::{RsaPrivateKey, pkcs1::EncodeRsaPrivateKey, rand_core::OsRng};
 
@@ -182,7 +182,7 @@ mod tests {
             client_id: CLIENT.into(),
             client_secret: ClientSecret::new("test".into()),
             origin: "http://localhost:8080".parse().unwrap(),
-            admin_role: "Admin".into(),
+            admin_emails: vec!["admin@example.com".into()],
         };
         let metadata: CoreProviderMetadata = serde_json::from_value(serde_json::json!({
             "issuer": format!("https://login.microsoftonline.com/{TENANT}/v2.0"),
@@ -203,10 +203,7 @@ mod tests {
     }
 
     fn claims() -> IdTokenClaims<AzureClaims, CoreGenderClaim> {
-        claims_with(AzureClaims {
-            tid: TENANT.into(),
-            roles: vec!["Admin".into()],
-        })
+        claims_with(AzureClaims { tid: TENANT.into() })
     }
 
     fn claims_with(additional: AzureClaims) -> IdTokenClaims<AzureClaims, CoreGenderClaim> {
@@ -219,6 +216,7 @@ mod tests {
             additional,
         )
         .set_nonce(Some(Nonce::new("nonce".into())))
+        .set_preferred_username(Some(EndUserUsername::new("admin@example.com".into())))
     }
 
     fn signed(
@@ -233,21 +231,25 @@ mod tests {
             None,
         )
         .unwrap()
+        .to_string()
+        .parse()
+        .unwrap()
     }
 
     #[test]
-    fn accepts_only_the_exact_admin_role_and_bounds_the_session() {
+    fn accepts_only_allowlisted_sign_in_emails_and_bounds_the_session() {
         let (provider, client, key) = fixture();
-        for (roles, expected) in [
-            (vec!["Admin".into()], true),
-            (vec!["admin".into()], false),
-            (vec![], false),
+        for (preferred_username, expected) in [
+            (Some("admin@example.com".into()), true),
+            (Some("ADMIN@EXAMPLE.COM".into()), true),
+            (Some("other@example.com".into()), false),
+            (Some("admin@example.com.attacker.test".into()), false),
+            (None, false),
         ] {
             let token = signed(
-                claims_with(AzureClaims {
-                    tid: TENANT.into(),
-                    roles,
-                }),
+                claims_with(AzureClaims { tid: TENANT.into() })
+                    .set_preferred_username(preferred_username.map(EndUserUsername::new))
+                    .set_email(Some(EndUserEmail::new("admin@example.com".into()))),
                 &key,
             );
             let principal = provider
@@ -270,7 +272,6 @@ mod tests {
             claims().set_expiration(Utc::now() - Duration::seconds(60)),
             claims_with(AzureClaims {
                 tid: "other-tenant".into(),
-                roles: vec!["Admin".into()],
             }),
         ] {
             assert!(

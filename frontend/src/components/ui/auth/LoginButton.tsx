@@ -18,7 +18,7 @@ export default function LoginButton({
       radius="md"
       className={className}
     >
-      Sign in with Azure
+      Sign in with Microsoft
     </Button>
   );
 }

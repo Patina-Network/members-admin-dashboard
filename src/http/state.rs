@@ -1,10 +1,11 @@
+use std::sync::Arc;
+
 use members_grpc_service::members::admin::members_admin_service_client::MembersAdminServiceClient;
 use metrics_exporter_prometheus::PrometheusHandle;
 use metrics_process::Collector;
 use tonic::transport::Channel;
 
 use crate::{auth::provider::AzureProvider, config::Config};
-use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct AppState {

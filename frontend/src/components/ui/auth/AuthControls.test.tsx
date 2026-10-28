@@ -52,5 +52,7 @@ it("shows the signed-in user and logout control", async () => {
   renderControls();
   expect(await screen.findByText("Angela")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Logout" })).toBeInTheDocument();
-  expect(screen.queryByRole("link", { name: "Sign in" })).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("link", { name: "Sign in" }),
+  ).not.toBeInTheDocument();
 });

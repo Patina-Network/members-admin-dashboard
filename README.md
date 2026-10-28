@@ -66,7 +66,7 @@ instead of `js/`:
 
 The theme, login card, and Home/Database navigation follow CodeBloom. Home has
 no page content. Login and logout use the server session; Database requires the
-Azure `Admin` app role. Member CRUD, pagination/counts, and CSV import remain
+configured Microsoft sign-in email allowlist. Member CRUD, pagination/counts, and CSV import remain
 separate feature tickets; the Database table is still a scaffold.
 
 ## Azure authentication
@@ -74,9 +74,20 @@ separate feature tickets; the Database table is still a scaffold.
 The Rust backend uses the authorization-code flow with PKCE and OpenID Connect.
 It validates Azure's signature, issuer, audience, expiration, nonce, tenant, and
 callback state before creating a session. Azure tokens and the client secret
-stay on the backend. Admin access requires the exact, case-sensitive `Admin`
-application role (override with `AZURE_ADMIN_ROLE`), not a tenant-wide Azure
-administrator role or an email-domain match.
+stay on the backend. Admin access uses `AZURE_ADMIN_EMAILS`, a comma-separated list of Microsoft
+sign-in email addresses. Entries are trimmed and matched case-insensitively
+against the validated ID token's standard `preferred_username` claim. Matching
+is exact: no domain-wide access, wildcards, contact-email fallback, or Azure app
+roles. Missing/empty configuration denies everyone. An account outside the list
+or without a sign-in username does not receive a signed-in session.
+
+For example: `AZURE_ADMIN_EMAILS=alice@example.com,bob@example.com`.
+Use each person's Microsoft sign-in address, which can differ from their contact
+email. The tenant restriction and all token validation checks still apply.
+Session identity remains the token's `sub`, not the email address. This is the
+MVP email policy: Microsoft usernames are mutable, so maintain the allowlist when
+accounts are renamed or reassigned. A future database-backed access policy should
+use immutable user IDs. See [Microsoft's claim reference](https://learn.microsoft.com/en-us/entra/identity-platform/id-token-claims-reference).
 
 Configure the app registration through the platform-infra Azure app workflow:
 
@@ -84,9 +95,10 @@ Configure the app registration through the platform-infra Azure app workflow:
    `<APP_ORIGIN>/oauth2/callback`. For Vite development use
    `http://localhost:5173/oauth2/callback`; for the built app use
    `http://localhost:8080/oauth2/callback`.
-2. Define an enabled app role with value `Admin` and allowed member type
-   `Users/Groups`. Assign authorized users/groups to it under the Enterprise
-   application's **Users and groups** section.
+2. Set `AZURE_ADMIN_EMAILS` to the authorized users' Microsoft sign-in addresses.
+   No Azure app role assignment or new database table is required. Update the
+   environment variable and restart/redeploy the server when changing access;
+   the restart also clears existing in-memory sessions.
 3. Create a client secret and configure `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`,
    `AZURE_CLIENT_SECRET`, and `APP_ORIGIN` on the backend. Use the secret value,
    not its ID. Register `<APP_ORIGIN>/login` as an allowed Web redirect URI for
@@ -112,11 +124,12 @@ Partial configuration fails startup.
 
 Sessions use an opaque HttpOnly, SameSite=Lax cookie, with Secure and the
 `__Host-` prefix on HTTPS. Sessions expire at the earlier of the ID token's
-expiration and one hour after login; role changes take effect on the next login.
+expiration and one hour after login; allowlist changes require a server restart.
 Login attempts expire after ten minutes, successful login replaces the session
 ID, and logout deletes the server session before continuing to Azure sign-out.
 No refresh tokens are stored. Sessions stay in process memory. A restart clears
-them, and each process keeps its own sessions.
+them, and each process keeps its own sessions. Expired records are removed on
+access and swept every minute, including abandoned sign-in attempts.
 
 `GET /api/auth/session` returns the current user and CSRF token. Write requests
 must send that token as `X-CSRF-Token`; browser Origin headers must match
@@ -142,7 +155,7 @@ assigned admin account, and a non-admin account.
 Protocol reference: [Microsoft's OpenID Connect sign-in and sign-out documentation](https://learn.microsoft.com/en-us/entra/identity-platform/v2-protocols-oidc).
 
 References: [Microsoft authorization-code flow](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow),
-[Microsoft application roles](https://learn.microsoft.com/en-us/entra/identity-platform/howto-add-app-roles-in-apps).
+[Microsoft ID token claims](https://learn.microsoft.com/en-us/entra/identity-platform/id-token-claims-reference).
 
 ## HTTP API types
 
@@ -205,7 +218,7 @@ published member API; no member RPCs are invoked by the setup scaffold.
 | `AZURE_TENANT_ID` | unset | Single-tenant Azure directory UUID |
 | `AZURE_CLIENT_ID` | unset | Azure Web application client UUID |
 | `AZURE_CLIENT_SECRET` | unset | Backend-only client secret |
-| `AZURE_ADMIN_ROLE` | `Admin` | Exact app role required for admin access |
+| `AZURE_ADMIN_EMAILS` | Empty (deny all) | Comma-separated Microsoft sign-in emails allowed admin access |
 | `APP_ORIGIN` | unset | Public application origin, including port in development |
 | `ENABLE_DOCUMENTATION` | `true` | Serve Swagger UI and OpenAPI routes |
 | `HTTP_PORT` | `8080` | HTTP port; binds `0.0.0.0` |

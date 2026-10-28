@@ -65,7 +65,7 @@ describe("Database access", () => {
     expect(screen.queryByText("Protected member data")).not.toBeInTheDocument();
   });
 
-  it("denies an authenticated user without the Admin role", async () => {
+  it("denies an authenticated user without allowlisted access", async () => {
     session({ id: "user", name: "User", isAdmin: false });
     renderDatabase();
     expect(await screen.findByText("Access denied")).toBeInTheDocument();

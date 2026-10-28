@@ -8,11 +8,12 @@ import { useAuthQuery } from "@/lib/api/queries/auth";
 
 const loginErrors: Record<string, string> = {
   unavailable:
-    "Azure sign-in is currently unavailable. Please try again later.",
+    "Microsoft sign-in is currently unavailable. Please try again later.",
   cancelled: "Sign-in was cancelled. You can try again.",
   invalid_callback:
     "Your sign-in request expired or was invalid. Please try again.",
-  login_failed: "We couldn't complete your Azure sign-in. Please try again.",
+  login_failed:
+    "We couldn't complete your Microsoft sign-in. Please try again.",
   forbidden:
     "You need admin access. Contact an administrator if you need access.",
 };

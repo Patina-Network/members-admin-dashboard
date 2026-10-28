@@ -2,11 +2,9 @@ use axum::Router;
 use openidconnect::CsrfToken;
 use serde::{Deserialize, Serialize};
 use time::{Duration, OffsetDateTime};
-use tower_sessions::{
-    Expiry, MemoryStore, Session, SessionManagerLayer, SessionStore, cookie::SameSite,
-};
+use tower_sessions::{Expiry, Session, SessionManagerLayer, SessionStore, cookie::SameSite};
 
-use super::config::AuthConfig;
+use super::{config::AuthConfig, store::ExpiringMemoryStore};
 
 pub const PRINCIPAL_KEY: &str = "principal";
 pub const LOGIN_KEY: &str = "login";
@@ -93,7 +91,7 @@ fn layer<S: SessionStore>(store: S, secure: bool) -> SessionManagerLayer<S> {
 pub fn with_sessions(router: Router, config: Option<&AuthConfig>) -> Router {
     let secure = config.is_some_and(AuthConfig::secure_cookie);
     tracing::warn!("sessions are stored in memory; restarting clears logins");
-    router.layer(layer(MemoryStore::default(), secure))
+    router.layer(layer(ExpiringMemoryStore::default(), secure))
 }
 
 #[cfg(test)]
@@ -129,7 +127,7 @@ mod tests {
     }
 
     async fn authenticated_app(admin: bool) -> (Router, String, Session) {
-        let store = MemoryStore::default();
+        let store = ExpiringMemoryStore::default();
         let session = Session::new(None, Arc::new(store.clone()), None);
         let mut principal = user(OffsetDateTime::now_utc().unix_timestamp() + 60);
         principal.user.is_admin = admin;
@@ -140,8 +138,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn callback_routes_apply_auth_response_headers() {
+        let router = app(test_state()).layer(layer(ExpiringMemoryStore::default(), false));
+        for path in ["/oauth2/callback", "/api/auth/callback"] {
+            let response = request(router.clone(), Method::GET, path, "", "").await;
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+            assert_eq!(response.headers()[header::REFERRER_POLICY], "no-referrer");
+        }
+    }
+
+    #[tokio::test]
     async fn http_routes_require_login_before_serving_database_or_member_api() {
-        let router = app(test_state()).layer(layer(MemoryStore::default(), false));
+        let router = app(test_state()).layer(layer(ExpiringMemoryStore::default(), false));
         for path in ["/", "/login", "/api/auth/session", "/livez"] {
             let response = request(router.clone(), Method::GET, path, "", "").await;
             assert_eq!(response.status(), StatusCode::OK, "{path}");
@@ -242,7 +251,7 @@ mod tests {
 
     #[tokio::test]
     async fn expires_and_revokes_sessions() {
-        let store = Arc::new(MemoryStore::default());
+        let store = Arc::new(ExpiringMemoryStore::default());
         let session = Session::new(None, store.clone(), None);
         establish(
             &session,
@@ -270,7 +279,7 @@ mod tests {
 
     #[tokio::test]
     async fn login_replaces_the_old_session_id() {
-        let store = Arc::new(MemoryStore::default());
+        let store = Arc::new(ExpiringMemoryStore::default());
         let session = Session::new(None, store.clone(), None);
         session.insert("old", "value").await.unwrap();
         session.save().await.unwrap();

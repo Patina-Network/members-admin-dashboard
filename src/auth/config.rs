@@ -7,7 +7,7 @@ pub struct AuthConfig {
     pub client_id: String,
     pub client_secret: ClientSecret,
     pub origin: Url,
-    pub admin_role: String,
+    pub admin_emails: Vec<String>,
 }
 
 impl AuthConfig {
@@ -62,18 +62,37 @@ impl AuthConfig {
                 && origin.fragment().is_none(),
             "APP_ORIGIN must contain only the scheme, host, and optional port"
         );
-        let admin_role = var("AZURE_ADMIN_ROLE").unwrap_or_else(|| "Admin".into());
-        ensure!(
-            !admin_role.trim().is_empty(),
-            "AZURE_ADMIN_ROLE cannot be empty"
-        );
+        let admin_emails = var("AZURE_ADMIN_EMAILS")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|email| !email.is_empty())
+            .map(str::to_ascii_lowercase)
+            .collect::<Vec<_>>();
+        for email in &admin_emails {
+            ensure!(
+                email.split_once('@').is_some_and(|(local, domain)| {
+                    !local.is_empty() && !domain.is_empty() && !domain.contains('@')
+                }) && !email.chars().any(char::is_whitespace)
+                    && !email.contains('*'),
+                "AZURE_ADMIN_EMAILS must contain comma-separated email addresses"
+            );
+        }
         Ok(Some(Self {
             tenant_id,
             client_id,
             client_secret,
             origin,
-            admin_role,
+            admin_emails,
         }))
+    }
+
+    pub fn allows_email(&self, email: Option<&str>) -> bool {
+        email.is_some_and(|email| {
+            self.admin_emails
+                .iter()
+                .any(|allowed| allowed.eq_ignore_ascii_case(email))
+        })
     }
 
     pub fn secure_cookie(&self) -> bool {
@@ -127,13 +146,33 @@ mod tests {
     #[test]
     fn local_defaults_and_urls() {
         let config = AuthConfig::from_vars(configured).unwrap().unwrap();
-        assert_eq!(config.admin_role, "Admin");
+        assert!(config.admin_emails.is_empty());
         assert!(!config.secure_cookie());
         assert_eq!(
             config.callback_url(),
             "http://localhost:5173/oauth2/callback"
         );
         assert!(AuthConfig::from_vars(|_| None).unwrap().is_none());
+    }
+
+    #[test]
+    fn parses_exact_email_allowlist_and_denies_empty_configuration() {
+        let config = AuthConfig::from_vars(|key| {
+            if key == "AZURE_ADMIN_EMAILS" {
+                Some(" Alice@Example.com, bob@example.com, ,".into())
+            } else {
+                configured(key)
+            }
+        })
+        .unwrap()
+        .unwrap();
+        assert!(config.allows_email(Some("alice@example.com")));
+        assert!(config.allows_email(Some("BOB@EXAMPLE.COM")));
+        assert!(!config.allows_email(Some("other@example.com")));
+        assert!(!config.allows_email(Some("alice@example.com.attacker.test")));
+        assert!(!config.allows_email(None));
+        let empty = AuthConfig::from_vars(configured).unwrap().unwrap();
+        assert!(!empty.allows_email(Some("alice@example.com")));
     }
 
     #[test]
@@ -144,7 +183,8 @@ mod tests {
             ("APP_ORIGIN", "http://example.com"),
             ("APP_ORIGIN", "https://example.com/path"),
             ("APP_ORIGIN", "https://user:password@example.com"),
-            ("AZURE_ADMIN_ROLE", ""),
+            ("AZURE_ADMIN_EMAILS", "*@example.com"),
+            ("AZURE_ADMIN_EMAILS", "not-an-email"),
             ("ENVIRONMENT", "production"),
         ] {
             assert!(

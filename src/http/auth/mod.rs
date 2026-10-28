@@ -76,13 +76,19 @@ pub async fn callback(
             return Ok(FlowResponse::redirect("/login?error=login_failed"));
         }
     };
-    let location = if principal.user.is_admin {
-        "/database"
-    } else {
-        "/login?error=forbidden"
-    };
-    session::establish(&session, principal).await?;
-    Ok(FlowResponse::redirect(location))
+    complete_login(&session, principal).await
+}
+
+async fn complete_login(
+    session: &Session,
+    principal: crate::auth::session::Principal,
+) -> Result<FlowResponse, AuthError> {
+    if !principal.user.is_admin {
+        session.flush().await?;
+        return Ok(FlowResponse::redirect("/login?error=forbidden"));
+    }
+    session::establish(session, principal).await?;
+    Ok(FlowResponse::redirect("/database"))
 }
 
 #[utoipa::path(get, path = "/api/auth/session", responses(SessionResponse, AuthError))]
@@ -147,7 +153,7 @@ mod tests {
                 client_id: "22222222-2222-2222-2222-222222222222".into(),
                 client_secret: ClientSecret::new("test-secret".into()),
                 origin: "http://localhost:8080".parse().unwrap(),
-                admin_role: "Admin".into(),
+                admin_emails: vec!["admin@example.com".into()],
             })
             .unwrap(),
         ));
@@ -164,6 +170,33 @@ mod tests {
             csrf_token: "csrf".into(),
             expires_at: OffsetDateTime::now_utc().unix_timestamp() + 60,
         }
+    }
+
+    #[tokio::test]
+    async fn login_only_establishes_sessions_for_allowlisted_accounts() {
+        let store = Arc::new(MemoryStore::default());
+        let session = Session::new(None, store.clone(), None);
+        let response = complete_login(&session, principal())
+            .await
+            .unwrap_or_else(|_| panic!("login failed"))
+            .into_response();
+        assert_eq!(response.headers()["location"], "/database");
+        assert!(session::principal(&session).await.unwrap().is_some());
+        let old_id = session.id();
+        let mut denied = principal();
+        denied.user.is_admin = false;
+        let response = complete_login(&session, denied)
+            .await
+            .unwrap_or_else(|_| panic!("login failed"))
+            .into_response();
+        assert_eq!(response.headers()["location"], "/login?error=forbidden");
+        assert!(session::principal(&session).await.unwrap().is_none());
+        assert!(
+            session::principal(&Session::new(old_id, store, None))
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]

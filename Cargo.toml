@@ -6,6 +6,7 @@ default-run = "members-admin-dashboard"
 
 [dependencies]
 anyhow = "1"
+async-trait = "0.1"
 openidconnect = { version = "4", default-features = false, features = ["reqwest", "rustls-tls", "timing-resistant-secret-traits"] }
 tower-sessions = "0.14"
 time = "0.3"
@@ -26,6 +27,7 @@ utoipa-swagger-ui = { version = "9", features = ["axum", "vendored"] }
 members-grpc-service = { version = "=1.0.0", registry = "patina" }
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 chrono = "0.4"
 http-body-util = "0.1"
 rsa = { version = "0.9", features = ["getrandom"] }
