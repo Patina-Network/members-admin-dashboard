@@ -3,6 +3,7 @@ import { useDisclosure } from "@mantine/hooks";
 import { motion } from "motion/react";
 import { Link } from "react-router-dom";
 
+import AuthControls from "@/components/ui/auth/AuthControls";
 import TransitionalButtons from "@/components/ui/button/transitional/TransitionalButtons";
 import HeaderContainer from "@/components/ui/header/container/HeaderContainer";
 import { MotionBox, MotionText } from "@/components/wrapper/Motion";
@@ -15,7 +16,7 @@ export default function Header() {
     useDisclosure(false);
   const navButtons = [homeButton, databaseButton];
 
-  const authButton = <Button type="button">Login</Button>;
+  const authButton = <AuthControls />;
 
   return (
     <>

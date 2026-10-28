@@ -1,15 +1,24 @@
 import { Button } from "@mantine/core";
+import { FaMicrosoft } from "react-icons/fa";
 
-export default function LoginButton({ className }: { className?: string }) {
+export default function LoginButton({
+  className,
+  disabled = false,
+}: {
+  className?: string;
+  disabled?: boolean;
+}) {
   return (
     <Button
-      type="button"
-      color="#0078D4"
+      component="a"
+      href={disabled ? undefined : "/api/auth/login"}
+      disabled={disabled}
+      leftSection={<FaMicrosoft size={14} />}
       fullWidth
       radius="md"
       className={className}
     >
-      Login with Azure
+      Sign in with Azure
     </Button>
   );
 }

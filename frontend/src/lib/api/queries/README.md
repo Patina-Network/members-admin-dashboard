@@ -4,5 +4,5 @@ They should not define `useQuery` or `useMutation` inline.
 Call the backend with the generated SDK and query helpers in
 `@/lib/api/generated`. Do not add a custom request helper.
 
-With the Rust backend running on port 8080, regenerate using
+Regenerate the schema and client without starting the backend using
 `pnpm --dir frontend generate`. Never edit `src/lib/api/generated` manually.

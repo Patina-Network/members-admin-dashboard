@@ -4,6 +4,7 @@ import DatabasePage from "@/app/database/Database.page";
 import ErrorPage from "@/app/error/Error.page";
 import HomePage from "@/app/home/Home.page";
 import LoginPage from "@/app/login/Login.page";
+import RequireAdmin from "@/components/ui/auth/RequireAdmin";
 import PageShell from "@/components/ui/page/PageShell";
 
 export const router = createBrowserRouter([
@@ -20,7 +21,9 @@ export const router = createBrowserRouter([
     path: "/database",
     element: (
       <PageShell>
-        <DatabasePage />
+        <RequireAdmin>
+          <DatabasePage />
+        </RequireAdmin>
       </PageShell>
     ),
     errorElement: <ErrorPage />,
