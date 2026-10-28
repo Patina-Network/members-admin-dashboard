@@ -24,9 +24,42 @@ where
         .map_err(Into::into)
 }
 
+pub async fn call_admin<M, T, F>(
+    timeout: Duration,
+    message: M,
+    rpc: impl FnOnce(Request<M>) -> F,
+) -> Result<T, UpstreamError>
+where
+    F: Future<Output = Result<Response<T>, Status>>,
+{
+    call(timeout, message, |mut request| {
+        request.metadata_mut().insert(
+            "profile",
+            tonic::metadata::MetadataValue::from_static("core_admin"),
+        );
+        rpc(request)
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::time::Duration;
+
+    use tonic::{Response, Status};
+
+    use super::{call, call_admin, error::UpstreamError};
+
+    #[tokio::test]
+    async fn admin_write_carries_profile_and_deadline() {
+        call_admin(Duration::from_secs(1), (), |request| async move {
+            assert_eq!(request.metadata().get("profile").unwrap(), "core_admin");
+            assert!(request.metadata().contains_key("grpc-timeout"));
+            Ok(Response::new(()))
+        })
+        .await
+        .unwrap();
+    }
 
     #[tokio::test]
     async fn call_sets_deadline_and_returns_response_body() {

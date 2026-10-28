@@ -1523,9 +1523,9 @@ dependencies = [
 
 [[package]]
 name = "members-grpc-service"
-version = "1.0.0"
+version = "1.0.6-beta.g4ec885d3"
 source = "sparse+https://pkg.vpn.patinanetwork.org/cargo/cargo/"
-checksum = "ed66d97de6ced8d6d50b3410fe2185e20420a681c0d826ab65d67d743c1b091a"
+checksum = "f7d739075fa428272fb93f9bec45b6a9f24dc5e26270d6a5cb95d6740a7c595b"
 dependencies = [
  "prost",
  "prost-types",

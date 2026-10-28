@@ -1,58 +1,172 @@
 import {
+  Alert,
   Button,
   FileInput,
   Group,
   Modal,
   Paper,
   Stack,
-  Table,
   Text,
   TextInput,
+  Textarea,
 } from "@mantine/core";
+import { notifications } from "@mantine/notifications";
 import { IconFileSpreadsheet } from "@tabler/icons-react";
+import { useRef, useState } from "react";
 
-type View = "choose" | "one" | "bulk-upload" | "bulk-preview";
+import type {
+  AddMembersModalProps,
+  AddMembersView,
+} from "@/app/database/_components/types";
+import type { NewMember } from "@/lib/api/generated/types.gen";
+
+import { useMemberForm } from "@/app/database/_components/hook";
+import { useAddMemberMutation } from "@/lib/api/queries/members";
 
 export default function AddMembersModal({
   opened,
   onClose,
-  view = "choose",
-}: {
-  opened: boolean;
-  onClose: () => void;
-  view?: View;
-}) {
+}: AddMembersModalProps) {
+  const [view, setView] = useState<AddMembersView>("choose");
+  const addMember = useAddMemberMutation();
+  const form = useMemberForm();
+  const submittingRef = useRef(false);
+  const close = () => {
+    if (submittingRef.current) return;
+    onClose();
+    setView("choose");
+    form.reset();
+    addMember.reset();
+  };
+  const onSubmit = (values: NewMember) => {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    addMember.mutate(values, {
+      onSuccess: () => {
+        notifications.show({ message: "Member added.", color: "green" });
+        form.reset();
+        addMember.reset();
+        setView("choose");
+        onClose();
+      },
+      onSettled: () => {
+        submittingRef.current = false;
+      },
+    });
+  };
+
   return (
     <Modal
       opened={opened}
-      onClose={onClose}
+      onClose={close}
       title="Add Member(s)"
       size="lg"
       centered
+      closeOnClickOutside={!addMember.isPending}
+      closeOnEscape={!addMember.isPending}
+      withCloseButton={!addMember.isPending}
     >
       {view === "choose" && (
         <Stack>
-          <Button type="button">Add One Member</Button>
-          <Button type="button" variant="light">
+          <Button onClick={() => setView("one")}>Add One Member</Button>
+          <Button variant="light" onClick={() => setView("bulk-upload")}>
             Upload Bulk Member(s)
           </Button>
         </Stack>
       )}
       {view === "one" && (
-        <Stack>
-          <TextInput label="Email" required />
-          <TextInput label="First name" required />
-          <TextInput label="Last name" required />
-          <TextInput label="Joined at" type="datetime-local" />
-          <TextInput label="Discord ID" />
-          <TextInput label="Discord username" />
-          <Group justify="flex-end">
-            <Button type="button" variant="default">
-              Back
-            </Button>
-            <Button type="button">Add</Button>
-          </Group>
-        </Stack>
+        <form noValidate onSubmit={form.onSubmit(onSubmit)}>
+          <Stack>
+            {addMember.error && (
+              <Alert color="red" role="alert">
+                {addMember.error.message}
+              </Alert>
+            )}
+            <TextInput
+              {...form.getInputProps("email")}
+              label="Email"
+              type="email"
+              required
+              disabled={addMember.isPending}
+            />
+            <TextInput
+              {...form.getInputProps("firstName")}
+              label="First name"
+              required
+              disabled={addMember.isPending}
+            />
+            <TextInput
+              {...form.getInputProps("lastName")}
+              label="Last name"
+              required
+              disabled={addMember.isPending}
+            />
+            <TextInput
+              {...form.getInputProps("joinedAt")}
+              label="Joined at"
+              type="datetime-local"
+              disabled={addMember.isPending}
+            />
+            <TextInput
+              {...form.getInputProps("discordId")}
+              label="Discord ID"
+              disabled={addMember.isPending}
+            />
+            <TextInput
+              {...form.getInputProps("discordUsername")}
+              label="Discord username"
+              disabled={addMember.isPending}
+            />
+            <TextInput
+              {...form.getInputProps("linkedinUsername")}
+              label="LinkedIn username"
+              disabled={addMember.isPending}
+            />
+            <TextInput
+              {...form.getInputProps("instagramUsername")}
+              label="Instagram username"
+              disabled={addMember.isPending}
+            />
+            <TextInput
+              {...form.getInputProps("career")}
+              label="Career"
+              disabled={addMember.isPending}
+            />
+            <TextInput
+              {...form.getInputProps("industry")}
+              label="Industry"
+              disabled={addMember.isPending}
+            />
+            <Textarea
+              {...form.getInputProps("profile")}
+              label="Profile notes"
+              autosize
+              minRows={3}
+              maxRows={6}
+              disabled={addMember.isPending}
+            />
+            <Group justify="flex-end">
+              <Button
+                variant="default"
+                disabled={addMember.isPending}
+                onClick={() => {
+                  if (submittingRef.current) return;
+                  addMember.reset();
+                  setView("choose");
+                }}
+              >
+                Back
+              </Button>
+              <Button
+                type="submit"
+                loading={addMember.isPending}
+                disabled={addMember.isPending}
+              >
+                Add
+              </Button>
+            </Group>
+          </Stack>
+        </form>
       )}
       {view === "bulk-upload" && (
         <Stack>
@@ -73,33 +187,13 @@ export default function AddMembersModal({
           </Paper>
           <FileInput disabled placeholder="Or choose a file" />
           <Group justify="flex-end">
-            <Button type="button" variant="default">
+            <Button
+              type="button"
+              variant="default"
+              onClick={() => setView("choose")}
+            >
               Back
             </Button>
-          </Group>
-        </Stack>
-      )}
-      {view === "bulk-preview" && (
-        <Stack>
-          <Text size="sm">Preview members to add</Text>
-          <Table striped withTableBorder>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>Email</Table.Th>
-                <Table.Th>First name</Table.Th>
-                <Table.Th>Last name</Table.Th>
-                <Table.Th>Joined at</Table.Th>
-                <Table.Th>Discord ID</Table.Th>
-                <Table.Th>Discord username</Table.Th>
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody />
-          </Table>
-          <Group justify="flex-end">
-            <Button type="button" variant="default">
-              Cancel
-            </Button>
-            <Button type="button">Add All</Button>
           </Group>
         </Stack>
       )}

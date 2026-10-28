@@ -37,8 +37,8 @@ impl From<Status> for UpstreamError {
     }
 }
 
-impl IntoResponse for UpstreamError {
-    fn into_response(self) -> Response {
+impl UpstreamError {
+    pub fn status_and_body(&self) -> (StatusCode, ErrorBody) {
         let (status, error) = match self {
             Self::InvalidArgument => (StatusCode::BAD_REQUEST, "invalid request"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not found"),
@@ -50,7 +50,48 @@ impl IntoResponse for UpstreamError {
             Self::Timeout => (StatusCode::GATEWAY_TIMEOUT, "upstream timeout"),
             Self::Failed => (StatusCode::BAD_GATEWAY, "upstream request failed"),
         };
-        (status, Json(ErrorBody { error })).into_response()
+        (status, ErrorBody { error })
+    }
+}
+
+impl utoipa::IntoResponses for UpstreamError {
+    fn responses() -> std::collections::BTreeMap<
+        String,
+        utoipa::openapi::RefOr<utoipa::openapi::response::Response>,
+    > {
+        use utoipa::openapi::{Content, response::ResponseBuilder};
+
+        [
+            Self::InvalidArgument,
+            Self::NotFound,
+            Self::AlreadyExists,
+            Self::Unauthenticated,
+            Self::PermissionDenied,
+            Self::ResourceExhausted,
+            Self::Unavailable,
+            Self::Timeout,
+            Self::Failed,
+        ]
+        .into_iter()
+        .map(|error| {
+            let (status, body) = error.status_and_body();
+            let response = ResponseBuilder::new()
+                .description(body.error)
+                .content(
+                    "application/json",
+                    Content::new(Some(<ErrorBody as utoipa::PartialSchema>::schema())),
+                )
+                .build();
+            (status.as_u16().to_string(), response.into())
+        })
+        .collect()
+    }
+}
+
+impl IntoResponse for UpstreamError {
+    fn into_response(self) -> Response {
+        let (status, body) = self.status_and_body();
+        (status, Json(body)).into_response()
     }
 }
 

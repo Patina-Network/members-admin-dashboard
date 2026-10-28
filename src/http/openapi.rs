@@ -4,6 +4,8 @@ use utoipa::OpenApi;
 #[openapi(
     paths(
         super::version::version,
+        super::members::create,
+        super::members::list,
         super::auth::login,
         super::auth::callback,
         super::auth::current_session,
@@ -11,6 +13,9 @@ use utoipa::OpenApi;
     ),
     components(schemas(
         super::ErrorBody,
+        super::members::Member,
+        super::members::MemberList,
+        super::members::NewMember,
         super::auth::response::SessionBody,
         super::auth::response::LogoutBody,
         crate::auth::session::User

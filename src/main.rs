@@ -4,7 +4,10 @@ use members_admin_dashboard::{
     config::Config,
     http::{app, state::AppState},
 };
-use members_grpc_service::members::admin::members_admin_service_client::MembersAdminServiceClient;
+use members_grpc_service::members::{
+    admin::members_admin_service_client::MembersAdminServiceClient,
+    members_service_client::MembersServiceClient,
+};
 use metrics_exporter_prometheus::PrometheusBuilder;
 
 fn init_tracing() {
@@ -49,7 +52,8 @@ async fn main() -> anyhow::Result<()> {
     let channel = config.grpc_endpoint()?.connect_lazy();
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", config.http_port)).await?;
     let state = AppState {
-        client: MembersAdminServiceClient::new(channel),
+        client: MembersAdminServiceClient::new(channel.clone()),
+        members_client: MembersServiceClient::new(channel),
         prometheus_handle,
         sys_collector,
         config: config.clone(),
