@@ -21,7 +21,11 @@ const loginErrors: Record<string, string> = {
 export default function LoginPage() {
   const [params] = useSearchParams();
   const { data, isPending, isError, refetch } = useAuthQuery();
-  const error = loginErrors[params.get("error") ?? ""];
+  const errorKey = params.get("error") ?? "";
+  const error =
+    Object.prototype.hasOwnProperty.call(loginErrors, errorKey) ?
+      loginErrors[errorKey]
+    : undefined;
 
   if (data?.user?.isAdmin && !isError)
     return <Navigate to="/database" replace />;

@@ -155,3 +155,52 @@ impl IntoResponse for LogoutResponse {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http_body_util::BodyExt;
+
+    #[tokio::test]
+    async fn auth_errors_use_safe_json_and_correct_http_statuses() {
+        let internal = AuthError::from(tower_sessions::session::Error::Store(
+            tower_sessions::session_store::Error::Backend("private backend details".into()),
+        ));
+        for (error, status, message) in [
+            (
+                AuthError::invalid(),
+                StatusCode::BAD_REQUEST,
+                "invalid authentication request",
+            ),
+            (
+                AuthError::unauthorized(),
+                StatusCode::UNAUTHORIZED,
+                "authentication required",
+            ),
+            (
+                AuthError::forbidden(),
+                StatusCode::FORBIDDEN,
+                "access denied",
+            ),
+            (
+                AuthError::unavailable(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "authentication unavailable",
+            ),
+            (
+                internal,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "session unavailable",
+            ),
+        ] {
+            let response = error.into_response();
+            assert_eq!(response.status(), status);
+            assert_eq!(response.headers()["content-type"], "application/json");
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+                serde_json::json!({"error": message})
+            );
+        }
+    }
+}

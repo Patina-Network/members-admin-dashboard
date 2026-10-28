@@ -176,15 +176,52 @@ mod tests {
     }
 
     #[test]
+    fn https_configuration_uses_secure_cookies_and_tenant_logout_redirect() {
+        let config = AuthConfig::from_vars(|key| match key {
+            "APP_ORIGIN" => Some("https://members.example.com".into()),
+            "ENVIRONMENT" => Some("production".into()),
+            _ => configured(key),
+        })
+        .unwrap()
+        .unwrap();
+        assert!(config.secure_cookie());
+        assert_eq!(
+            config.callback_url(),
+            "https://members.example.com/oauth2/callback"
+        );
+        let logout = Url::parse(&config.logout_url()).unwrap();
+        assert_eq!(logout.host_str(), Some("login.microsoftonline.com"));
+        assert_eq!(
+            logout.path(),
+            "/11111111-1111-1111-1111-111111111111/oauth2/v2.0/logout"
+        );
+        assert_eq!(
+            logout.query_pairs().collect::<Vec<_>>(),
+            vec![(
+                "post_logout_redirect_uri".into(),
+                "https://members.example.com/login".into()
+            )]
+        );
+    }
+
+    #[test]
     fn rejects_partial_or_unsafe_configuration() {
         for (key, value) in [
             ("AZURE_TENANT_ID", "common"),
+            ("AZURE_CLIENT_ID", "not-a-uuid"),
             ("AZURE_CLIENT_SECRET", ""),
             ("APP_ORIGIN", "http://example.com"),
             ("APP_ORIGIN", "https://example.com/path"),
             ("APP_ORIGIN", "https://user:password@example.com"),
+            ("APP_ORIGIN", "not a URL"),
+            ("APP_ORIGIN", "https://example.com?query=1"),
+            ("APP_ORIGIN", "https://example.com#fragment"),
             ("AZURE_ADMIN_EMAILS", "*@example.com"),
             ("AZURE_ADMIN_EMAILS", "not-an-email"),
+            ("AZURE_ADMIN_EMAILS", "@example.com"),
+            ("AZURE_ADMIN_EMAILS", "admin@"),
+            ("AZURE_ADMIN_EMAILS", "admin@other@example.com"),
+            ("AZURE_ADMIN_EMAILS", "admin user@example.com"),
             ("ENVIRONMENT", "production"),
         ] {
             assert!(

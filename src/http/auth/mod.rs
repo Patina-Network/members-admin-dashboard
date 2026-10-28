@@ -200,6 +200,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn incomplete_callbacks_never_create_a_session() {
+        for (state_value, code, has_attempt) in [
+            (Some("expected"), None, true),
+            (Some("expected"), Some(""), true),
+            (None, Some("code"), true),
+            (Some("expected"), Some("code"), false),
+        ] {
+            let session = Session::new(None, Arc::new(MemoryStore::default()), None);
+            if has_attempt {
+                session
+                    .insert(
+                        LOGIN_KEY,
+                        LoginAttempt {
+                            state: "expected".into(),
+                            nonce: "nonce".into(),
+                            verifier: "verifier".into(),
+                            expires_at: OffsetDateTime::now_utc().unix_timestamp() + 60,
+                        },
+                    )
+                    .await
+                    .unwrap();
+            }
+            let response = callback(
+                State(auth_state()),
+                session.clone(),
+                Ok(Query(CallbackQuery {
+                    code: code.map(str::to_owned),
+                    state: state_value.map(str::to_owned),
+                    error: None,
+                })),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("callback failed"))
+            .into_response();
+            assert_eq!(
+                response.headers()["location"],
+                "/login?error=invalid_callback"
+            );
+            assert!(session::principal(&session).await.unwrap().is_none());
+            assert!(
+                session
+                    .get::<LoginAttempt>(LOGIN_KEY)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_callback_query_returns_bad_request() {
+        use axum::extract::FromRequestParts;
+        let (mut parts, _) = axum::http::Request::builder()
+            .uri("/oauth2/callback?code=one&code=two")
+            .body(())
+            .unwrap()
+            .into_parts();
+        let query = Query::<CallbackQuery>::from_request_parts(&mut parts, &()).await;
+        assert!(query.is_err());
+        let session = Session::new(None, Arc::new(MemoryStore::default()), None);
+        let response = callback(State(auth_state()), session, query)
+            .await
+            .err()
+            .unwrap()
+            .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn reports_signed_out_session_when_auth_is_not_configured() {
         let session = Session::new(None, Arc::new(MemoryStore::default()), None);
         let response = current_session(State(test_state()), session.clone())

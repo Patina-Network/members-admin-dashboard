@@ -71,6 +71,13 @@ separate feature tickets; the Database table is still a scaffold.
 
 ## Azure authentication
 
+Azure discovery and signing keys are cached in process for one hour and refreshed
+on the next sign-in after expiry. Concurrent requests share one refresh. Failed
+discovery attempts back off for 30 seconds. An unknown signing key triggers one
+refresh and revalidation of the same ID token (without redeeming the code again),
+limited to once every five minutes. Expired metadata or unresolved signing keys
+deny sign-in.
+
 The Rust backend uses the authorization-code flow with PKCE and OpenID Connect.
 It validates Azure's signature, issuer, audience, expiration, nonce, tenant, and
 callback state before creating a session. Azure tokens and the client secret

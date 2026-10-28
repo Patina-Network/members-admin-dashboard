@@ -138,6 +138,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_cookie_has_security_attributes_for_each_origin() {
+        for origin in ["http://localhost:8080", "https://members.example.com"] {
+            let config = AuthConfig {
+                tenant_id: "11111111-1111-1111-1111-111111111111".into(),
+                client_id: "22222222-2222-2222-2222-222222222222".into(),
+                client_secret: openidconnect::ClientSecret::new("test".into()),
+                origin: origin.parse().unwrap(),
+                admin_emails: vec![],
+            };
+            let router = Router::new().route(
+                "/",
+                axum::routing::get(|session: Session| async move {
+                    session.insert("value", "test").await.unwrap();
+                    "ok"
+                }),
+            );
+            let response = request(
+                with_sessions(router, Some(&config)),
+                Method::GET,
+                "/",
+                "",
+                "",
+            )
+            .await;
+            let cookie = response.headers()[header::SET_COOKIE].to_str().unwrap();
+            assert!(cookie.contains("HttpOnly"));
+            assert!(cookie.contains("SameSite=Lax"));
+            assert!(cookie.contains("Path=/"));
+            assert_eq!(cookie.contains("Secure"), config.secure_cookie());
+            assert_eq!(
+                cookie.starts_with("__Host-members_session="),
+                config.secure_cookie()
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn callback_routes_apply_auth_response_headers() {
         let router = app(test_state()).layer(layer(ExpiringMemoryStore::default(), false));
         for path in ["/oauth2/callback", "/api/auth/callback"] {
@@ -195,7 +232,6 @@ mod tests {
             .await;
             assert_eq!(response.status(), StatusCode::FORBIDDEN);
             let response = request(router.clone(), method, "/api/members", &cookie, "csrf").await;
-            // CRUD is not implemented yet; authorized requests reach the API fallback.
             assert_eq!(response.status(), StatusCode::NOT_FOUND);
         }
     }
