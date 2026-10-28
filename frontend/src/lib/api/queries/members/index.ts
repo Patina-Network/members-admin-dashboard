@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { MemberList, NewMember } from "@/lib/api/generated/types.gen";
 
 import { listQueryKey } from "@/lib/api/generated/@tanstack/react-query.gen";
-import { create, list } from "@/lib/api/generated/sdk.gen";
+import { create, currentSession, list } from "@/lib/api/generated/sdk.gen";
 
 const membersKey = listQueryKey();
 const uncertainWriteMessage =
@@ -35,7 +35,19 @@ async function fetchMembers(signal: AbortSignal) {
 }
 
 async function createMember(body: NewMember) {
-  const result = await create({ body }).catch(() => {
+  const { data: session } = await currentSession();
+  if (!session) {
+    throw new Error("Unable to check your session. Please try again.");
+  }
+  if (!session.user?.isAdmin || !session.csrfToken) {
+    throw new Error(
+      "Please sign in with an admin account before adding members.",
+    );
+  }
+  const result = await create({
+    body,
+    headers: { "X-CSRF-Token": session.csrfToken },
+  }).catch(() => {
     throw new Error(uncertainWriteMessage);
   });
   if (!result.data) {

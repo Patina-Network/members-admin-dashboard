@@ -1,10 +1,13 @@
 import {
+  Accordion,
   Alert,
   Button,
   FileInput,
   Group,
   Modal,
+  NativeSelect,
   Paper,
+  SimpleGrid,
   Stack,
   Text,
   TextInput,
@@ -23,10 +26,21 @@ import type { NewMember } from "@/lib/api/generated/types.gen";
 import { useMemberForm } from "@/app/database/_components/hook";
 import { useAddMemberMutation } from "@/lib/api/queries/members";
 
+const roleLabels: Record<NonNullable<NewMember["role"]>, string> = {
+  board: "Board",
+  mentor: "Mentor",
+  mentee: "Mentee",
+};
+const roleOptions = [
+  { value: "", label: "Select a role" },
+  ...Object.entries(roleLabels).map(([value, label]) => ({ value, label })),
+];
+
 export default function AddMembersModal({
   opened,
   onClose,
 }: AddMembersModalProps) {
+  const [details, setDetails] = useState<string | null>(null);
   const [view, setView] = useState<AddMembersView>("choose");
   const addMember = useAddMemberMutation();
   const form = useMemberForm();
@@ -35,6 +49,7 @@ export default function AddMembersModal({
     if (submittingRef.current) return;
     onClose();
     setView("choose");
+    setDetails(null);
     form.reset();
     addMember.reset();
   };
@@ -47,6 +62,7 @@ export default function AddMembersModal({
         form.reset();
         addMember.reset();
         setView("choose");
+        setDetails(null);
         onClose();
       },
       onSettled: () => {
@@ -75,7 +91,23 @@ export default function AddMembersModal({
         </Stack>
       )}
       {view === "one" && (
-        <form noValidate onSubmit={form.onSubmit(onSubmit)}>
+        <form
+          noValidate
+          onSubmit={form.onSubmit(onSubmit, (errors) => {
+            if (
+              [
+                "discordId",
+                "discordUsername",
+                "linkedinUsername",
+                "instagramUsername",
+                "career",
+                "industry",
+              ].some((field) => errors[field])
+            ) {
+              setDetails("additional-details");
+            }
+          })}
+        >
           <Stack>
             {addMember.error && (
               <Alert color="red" role="alert">
@@ -91,52 +123,74 @@ export default function AddMembersModal({
             />
             <TextInput
               {...form.getInputProps("firstName")}
-              label="First name"
+              label="First Name"
               required
               disabled={addMember.isPending}
             />
             <TextInput
               {...form.getInputProps("lastName")}
-              label="Last name"
+              label="Last Name"
               required
               disabled={addMember.isPending}
             />
             <TextInput
               {...form.getInputProps("joinedAt")}
-              label="Joined at"
+              label="Joined At"
               type="datetime-local"
               disabled={addMember.isPending}
             />
-            <TextInput
-              {...form.getInputProps("discordId")}
-              label="Discord ID"
+            <NativeSelect
+              {...form.getInputProps("role")}
+              label="Role"
+              data={roleOptions}
               disabled={addMember.isPending}
             />
-            <TextInput
-              {...form.getInputProps("discordUsername")}
-              label="Discord username"
-              disabled={addMember.isPending}
-            />
-            <TextInput
-              {...form.getInputProps("linkedinUsername")}
-              label="LinkedIn username"
-              disabled={addMember.isPending}
-            />
-            <TextInput
-              {...form.getInputProps("instagramUsername")}
-              label="Instagram username"
-              disabled={addMember.isPending}
-            />
-            <TextInput
-              {...form.getInputProps("career")}
-              label="Career"
-              disabled={addMember.isPending}
-            />
-            <TextInput
-              {...form.getInputProps("industry")}
-              label="Industry"
-              disabled={addMember.isPending}
-            />
+            <Accordion
+              variant="contained"
+              radius="md"
+              value={details}
+              onChange={setDetails}
+            >
+              <Accordion.Item value="additional-details">
+                <Accordion.Control>
+                  Additional Details: (Social & Professional)
+                </Accordion.Control>
+                <Accordion.Panel>
+                  <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
+                    <TextInput
+                      {...form.getInputProps("discordId")}
+                      label="Discord ID"
+                      disabled={addMember.isPending}
+                    />
+                    <TextInput
+                      {...form.getInputProps("discordUsername")}
+                      label="Discord Username"
+                      disabled={addMember.isPending}
+                    />
+                    <TextInput
+                      {...form.getInputProps("linkedinUsername")}
+                      label="LinkedIn Username"
+                      disabled={addMember.isPending}
+                    />
+                    <TextInput
+                      {...form.getInputProps("instagramUsername")}
+                      label="Instagram Username"
+                      disabled={addMember.isPending}
+                    />
+                    <TextInput
+                      {...form.getInputProps("career")}
+                      label="Career"
+                      disabled={addMember.isPending}
+                    />
+                    <TextInput
+                      {...form.getInputProps("industry")}
+                      label="Industry"
+                      disabled={addMember.isPending}
+                    />
+                  </SimpleGrid>
+                </Accordion.Panel>
+              </Accordion.Item>
+            </Accordion>
             <Textarea
               {...form.getInputProps("profile")}
               label="Profile notes"

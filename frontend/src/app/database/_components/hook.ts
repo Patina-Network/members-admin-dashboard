@@ -1,5 +1,6 @@
 import { useForm } from "@mantine/form";
 
+import type { MemberFormValues } from "@/app/database/_components/types";
 import type { NewMember } from "@/lib/api/generated/types.gen";
 
 function validateSocialUsername(value: string) {
@@ -8,7 +9,7 @@ function validateSocialUsername(value: string) {
     : null;
 }
 
-const initialValues = {
+const initialValues: MemberFormValues = {
   email: "",
   firstName: "",
   lastName: "",
@@ -20,13 +21,11 @@ const initialValues = {
   career: "",
   industry: "",
   profile: "",
+  role: "",
 };
 
 export const useMemberForm = () => {
-  return useForm<
-    typeof initialValues,
-    (values: typeof initialValues) => NewMember
-  >({
+  return useForm<MemberFormValues, (values: MemberFormValues) => NewMember>({
     initialValues,
     validate: {
       discordId: (value, values) => {
@@ -77,6 +76,7 @@ export const useMemberForm = () => {
       career: values.career.trim() || null,
       industry: values.industry.trim() || null,
       profile: values.profile.trim() || null,
+      role: values.role || null,
     }),
   });
 };

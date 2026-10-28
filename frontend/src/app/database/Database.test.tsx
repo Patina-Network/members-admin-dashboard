@@ -12,10 +12,11 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import DatabasePage from "@/app/database/Database.page";
-import { create, list } from "@/lib/api/generated/sdk.gen";
+import { create, currentSession, list } from "@/lib/api/generated/sdk.gen";
 
 vi.mock("@/lib/api/generated/sdk.gen", () => ({
   create: vi.fn(),
+  currentSession: vi.fn(),
   list: vi.fn(),
 }));
 const member = {
@@ -54,8 +55,8 @@ async function openForm() {
 }
 async function fillForm(user: ReturnType<typeof userEvent.setup>) {
   await user.type(screen.getByLabelText(/^Email/), "person@example.com");
-  await user.type(screen.getByLabelText(/^First name/), "First");
-  await user.type(screen.getByLabelText(/^Last name/), "Last");
+  await user.type(screen.getByLabelText(/^First Name/), "First");
+  await user.type(screen.getByLabelText(/^Last Name/), "Last");
 }
 
 function deferred<T>() {
@@ -86,6 +87,15 @@ const memberList = (members: (typeof member)[]) => ({
 });
 
 beforeEach(() => {
+  vi.mocked(currentSession).mockResolvedValue({
+    data: {
+      user: { id: "admin", name: "Admin", isAdmin: true },
+      csrfToken: "test-csrf",
+      loginEnabled: true,
+    },
+    request: new Request("http://localhost/api/auth/session"),
+    response,
+  });
   vi.mocked(list).mockResolvedValue({
     data: { members: [], total: 0 },
     request: new Request("http://localhost/api/members"),
@@ -118,6 +128,7 @@ describe("add member", () => {
     expect(await screen.findByText("1 member")).toBeInTheDocument();
     expect(screen.getByText(member.email)).toBeInTheDocument();
     expect(create).toHaveBeenCalledWith({
+      headers: { "X-CSRF-Token": "test-csrf" },
       body: {
         email: member.email,
         first_name: "First",
@@ -130,6 +141,7 @@ describe("add member", () => {
         career: null,
         industry: null,
         profile: null,
+        role: null,
       },
     });
     await waitFor(() =>
@@ -148,12 +160,26 @@ describe("add member", () => {
     renderPage();
     const user = await openForm();
     await fillForm(user);
+    const details = screen.getByRole("button", {
+      name: /Social & Professional/,
+    });
+    expect(details).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByLabelText("Role")).toBeVisible();
+    await user.click(details);
+    expect(details).toHaveAttribute("aria-expanded", "true");
+    await user.selectOptions(screen.getByLabelText("Role"), "mentor");
+    await user.type(screen.getByLabelText("Discord ID"), "123");
+    await user.click(details);
+    expect(details).toHaveAttribute("aria-expanded", "false");
+    await user.click(details);
+    expect(screen.getByLabelText("Discord ID")).toHaveValue("123");
+    await user.clear(screen.getByLabelText("Discord ID"));
     await user.type(
-      screen.getByLabelText("LinkedIn username"),
+      screen.getByLabelText("LinkedIn Username"),
       " alex-rivera ",
     );
     await user.type(
-      screen.getByLabelText("Instagram username"),
+      screen.getByLabelText("Instagram Username"),
       " alex.rivera ",
     );
     await user.type(screen.getByLabelText("Career"), " Engineer ");
@@ -162,12 +188,14 @@ describe("add member", () => {
     submitForm();
     await waitFor(() =>
       expect(create).toHaveBeenCalledWith({
+        headers: { "X-CSRF-Token": "test-csrf" },
         body: expect.objectContaining({
           linkedin_username: "alex-rivera",
           instagram_username: "alex.rivera",
           career: "Engineer",
           industry: "Technology",
           profile: "Private notes",
+          role: "mentor",
         }),
       }),
     );
@@ -176,7 +204,7 @@ describe("add member", () => {
     );
     await user.click(screen.getByRole("button", { name: "Add" }));
     await user.click(screen.getByRole("button", { name: "Add One Member" }));
-    expect(screen.getByLabelText("LinkedIn username")).toHaveValue("");
+    expect(screen.getByLabelText("LinkedIn Username")).toHaveValue("");
     expect(screen.getByLabelText("Profile notes")).toHaveValue("");
   });
 
@@ -190,16 +218,25 @@ describe("add member", () => {
     renderPage();
     const user = await openForm();
     await fillForm(user);
-    await user.type(screen.getByLabelText("LinkedIn username"), username);
-    await user.type(screen.getByLabelText("Instagram username"), username);
+    await user.click(
+      screen.getByRole("button", { name: /Social & Professional/ }),
+    );
+    await user.type(screen.getByLabelText("LinkedIn Username"), username);
+    await user.type(screen.getByLabelText("Instagram Username"), username);
+    const details = screen.getByRole("button", {
+      name: /Social & Professional/,
+    });
+    await user.click(details);
+    expect(details).toHaveAttribute("aria-expanded", "false");
     submitForm();
+    expect(details).toHaveAttribute("aria-expanded", "true");
     expect(
       await screen.findAllByText(
         "Please enter a username without a URL, @, or spaces",
       ),
     ).toHaveLength(2);
     expect(create).not.toHaveBeenCalled();
-    expect(screen.getByLabelText("LinkedIn username")).toHaveValue(username);
+    expect(screen.getByLabelText("LinkedIn Username")).toHaveValue(username);
   });
 
   it("keeps the add form available without an immediate list-error banner", async () => {
@@ -215,9 +252,12 @@ describe("add member", () => {
     renderPage();
     const user = await openForm();
     await fillForm(user);
+    await user.click(
+      screen.getByRole("button", { name: /Social & Professional/ }),
+    );
     await user.type(screen.getByLabelText("Discord ID"), "123");
     const future = new Date(Date.now() + 86400000).toISOString().slice(0, 16);
-    fireEvent.change(screen.getByLabelText("Joined at"), {
+    fireEvent.change(screen.getByLabelText("Joined At"), {
       target: { value: future },
     });
     await user.click(
@@ -231,6 +271,23 @@ describe("add member", () => {
     ).toBeInTheDocument();
     expect(create).not.toHaveBeenCalled();
   });
+  it("does not create a member when the session check fails", async () => {
+    vi.mocked(currentSession).mockResolvedValueOnce({
+      data: undefined,
+      error: { error: "service unavailable" },
+      request: new Request("http://localhost/api/auth/session"),
+      response: new Response(null, { status: 503 }),
+    });
+    renderPage();
+    const user = await openForm();
+    await fillForm(user);
+    submitForm();
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Unable to check your session. Please try again.",
+    );
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it("keeps the form open and preserves values on duplicate email", async () => {
     vi.mocked(create).mockResolvedValue({
       data: undefined,

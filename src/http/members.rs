@@ -21,6 +21,24 @@ use crate::{
     http::state::AppState,
 };
 
+#[derive(Clone, Copy, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberRole {
+    Board,
+    Mentor,
+    Mentee,
+}
+
+impl From<MemberRole> for i32 {
+    fn from(role: MemberRole) -> Self {
+        match role {
+            MemberRole::Board => members::MemberRole::Board as i32,
+            MemberRole::Mentor => members::MemberRole::Mentor as i32,
+            MemberRole::Mentee => members::MemberRole::Mentee as i32,
+        }
+    }
+}
+
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct NewMember {
     email: String,
@@ -34,6 +52,7 @@ pub struct NewMember {
     career: Option<String>,
     industry: Option<String>,
     profile: Option<String>,
+    role: Option<MemberRole>,
 }
 
 impl TryFrom<NewMember> for CreateMemberRequest {
@@ -61,6 +80,7 @@ impl TryFrom<NewMember> for CreateMemberRequest {
             career: optional(input.career),
             industry: optional(input.industry),
             profile: optional(input.profile),
+            role: input.role.map(Into::into),
         })
     }
 }
@@ -243,7 +263,28 @@ mod tests {
             career: None,
             industry: None,
             profile: None,
+            role: None,
         }
+    }
+
+    #[test]
+    fn forwards_member_roles() {
+        for (role, expected) in [
+            (super::MemberRole::Board, members::MemberRole::Board),
+            (super::MemberRole::Mentor, members::MemberRole::Mentor),
+            (super::MemberRole::Mentee, members::MemberRole::Mentee),
+        ] {
+            let mut input = new_member();
+            input.role = Some(role);
+            let request = CreateMemberRequest::try_from(input).unwrap();
+            assert_eq!(request.role, Some(expected as i32));
+        }
+        assert!(
+            CreateMemberRequest::try_from(new_member())
+                .unwrap()
+                .role
+                .is_none()
+        );
     }
 
     #[test]
