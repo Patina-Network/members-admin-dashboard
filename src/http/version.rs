@@ -43,6 +43,7 @@ mod tests {
     async fn returns_configured_version_or_fallback() {
         for (configured, expected) in [(Some("test".to_owned()), "test"), (None, "N/A")] {
             let state = AppState {
+                auth: None,
                 client: MembersAdminServiceClient::new(
                     Endpoint::from_static("http://localhost:50051").connect_lazy(),
                 ),

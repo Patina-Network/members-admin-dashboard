@@ -3,7 +3,8 @@ use metrics_exporter_prometheus::PrometheusHandle;
 use metrics_process::Collector;
 use tonic::transport::Channel;
 
-use crate::config::Config;
+use crate::{auth::provider::AzureProvider, config::Config};
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -11,4 +12,27 @@ pub struct AppState {
     pub prometheus_handle: PrometheusHandle,
     pub sys_collector: Collector,
     pub config: Config,
+    pub auth: Option<Arc<AzureProvider>>,
+}
+
+#[cfg(test)]
+pub(crate) fn test_state() -> AppState {
+    AppState {
+        client: MembersAdminServiceClient::new(
+            tonic::transport::Endpoint::from_static("http://localhost:50051").connect_lazy(),
+        ),
+        prometheus_handle: metrics_exporter_prometheus::PrometheusBuilder::new()
+            .build_recorder()
+            .handle(),
+        sys_collector: Collector::default(),
+        config: Config {
+            members_admin_service_grpc_host: "localhost:50051".into(),
+            members_admin_service_grpc_tls: false,
+            members_admin_service_grpc_timeout: std::time::Duration::from_secs(3),
+            http_port: 8080,
+            enable_documentation: true,
+            version: None,
+        },
+        auth: None,
+    }
 }
