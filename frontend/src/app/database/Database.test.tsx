@@ -239,11 +239,13 @@ describe("add member", () => {
     expect(screen.getByLabelText("LinkedIn Username")).toHaveValue(username);
   });
 
-  it("keeps the add form available without an immediate list-error banner", async () => {
+  it("shows a list error while keeping the add form available", async () => {
     vi.mocked(list).mockRejectedValue(new Error("Service unavailable"));
     renderPage();
     await waitFor(() => expect(list).toHaveBeenCalled());
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Unable to load members",
+    );
     await openForm();
     expect(screen.getByLabelText(/^Email/)).toBeInTheDocument();
   });
@@ -358,5 +360,54 @@ describe("add member", () => {
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
     expect(create).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("member list states", () => {
+  it("distinguishes loading from an empty result", async () => {
+    const pending = deferred<ReturnType<typeof memberList>>();
+    vi.mocked(list).mockReturnValueOnce(pending.promise);
+    renderPage();
+    expect(screen.getByText("Loading members…")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Members will appear here"),
+    ).not.toBeInTheDocument();
+    await act(async () => pending.resolve(memberList([])));
+    expect(await screen.findByText("0 members")).toBeInTheDocument();
+    expect(screen.getByText("Members will appear here")).toBeInTheDocument();
+  });
+  it("shows failed refreshes with cached rows and allows retry", async () => {
+    vi.mocked(list).mockResolvedValueOnce(memberList([member]));
+    const client = renderPage();
+    expect(await screen.findByText(member.email)).toBeInTheDocument();
+    vi.mocked(list).mockRejectedValueOnce(new Error("Offline"));
+    await act(async () => {
+      await client.invalidateQueries();
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Unable to refresh members",
+    );
+    expect(screen.getByText(member.email)).toBeInTheDocument();
+    vi.mocked(list).mockResolvedValueOnce(memberList([]));
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("0 members")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+  it("refetches after creation while the initial request is pending", async () => {
+    const pending = deferred<ReturnType<typeof memberList>>();
+    vi.mocked(list)
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValue(memberList([member]));
+    vi.mocked(create).mockResolvedValue(savedMember());
+    renderPage();
+    const signal = vi.mocked(list).mock.calls[0][0]?.signal;
+    const user = await openForm();
+    await fillForm(user);
+    submitForm();
+    expect(await screen.findByText("1 member")).toBeInTheDocument();
+    expect(signal?.aborted).toBe(true);
+    await act(async () => pending.resolve(memberList([])));
+    expect(screen.getByText("1 member")).toBeInTheDocument();
+    expect(screen.getByText(member.email)).toBeInTheDocument();
   });
 });

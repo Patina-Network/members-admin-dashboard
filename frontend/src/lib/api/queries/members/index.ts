@@ -22,7 +22,10 @@ export const useAddMemberMutation = () => {
   return useMutation({
     retry: false,
     mutationFn: createMember,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: membersKey }),
+    onSuccess: async () => {
+      await queryClient.cancelQueries({ queryKey: membersKey });
+      await queryClient.invalidateQueries({ queryKey: membersKey });
+    },
   });
 };
 
