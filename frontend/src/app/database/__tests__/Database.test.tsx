@@ -1211,10 +1211,10 @@ it.each([false, true])(
   },
 );
 it("previews CSV, cancels to upload, submits bulk and shows row outcomes", async () => {
-  vi.mocked(list).mockResolvedValue({
-    data: { members: [member], total: 1 },
-    response,
-  } as never);
+  const refresh = deferred<ReturnType<typeof memberList>>();
+  vi.mocked(list)
+    .mockResolvedValueOnce(memberList([member]))
+    .mockReturnValueOnce(refresh.promise);
   vi.mocked(currentSession).mockResolvedValue({
     data: { user: { isAdmin: true }, csrfToken: "token" },
     response,
@@ -1279,6 +1279,57 @@ it("previews CSV, cancels to upload, submits bulk and shows row outcomes", async
     }),
   );
   expect(list).toHaveBeenCalledTimes(2);
+  expect(screen.getByRole("button", { name: "Back to upload" })).toBeEnabled();
+  await user.click(screen.getByRole("button", { name: "Back to upload" }));
+  expect(screen.getByLabelText("Choose CSV file")).toBeInTheDocument();
+  await act(async () => refresh.resolve(memberList([member])));
+});
+
+it("preserves confirmed bulk imports and counts when the list refresh fails", async () => {
+  const refresh = deferred<ReturnType<typeof memberList>>();
+  const imported = { ...member, member_id: 2, email: "imported@example.com" };
+  vi.mocked(list)
+    .mockResolvedValueOnce(memberList([member]))
+    .mockReturnValueOnce(refresh.promise);
+  vi.mocked(currentSession).mockResolvedValue({
+    data: { user: { isAdmin: true }, csrfToken: "token" },
+    response,
+  } as never);
+  vi.mocked(bulkCreate).mockResolvedValue({
+    data: {
+      results: [
+        { index: 0, member: imported, error: null },
+        { index: 1, member, error: null },
+        { index: 2, member: null, error: "Duplicate email" },
+      ],
+    },
+    response,
+  } as never);
+  renderPage();
+  const user = userEvent.setup();
+  await screen.findByText(member.email);
+  await user.click(screen.getByRole("button", { name: "Add" }));
+  await user.click(
+    screen.getByRole("button", { name: "Upload Bulk Member(s)" }),
+  );
+  const file = new File([""], "members.csv", { type: "text/csv" });
+  Object.defineProperty(file, "text", {
+    value: async () =>
+      "email,first_name,last_name\nimported@example.com,A,B\nperson@example.com,First,Last\nfailed@example.com,C,D",
+  });
+  await user.upload(screen.getByLabelText("Choose CSV file"), file);
+  await user.click(await screen.findByRole("button", { name: "Add All" }));
+  await screen.findByText("2 added, 1 failed");
+  expect(screen.getByText("2 members")).toBeInTheDocument();
+  await act(async () => refresh.reject(new Error("List refresh failed")));
+  await user.keyboard("{Escape}");
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
+  expect(screen.getByText(imported.email)).toBeInTheDocument();
+  expect(screen.getAllByText(member.email)).toHaveLength(1);
+  expect(screen.getByText("2 members")).toBeInTheDocument();
+  expect(screen.queryByText("failed@example.com")).not.toBeInTheDocument();
 });
 
 it.each(["invalid date", "oversized file"])(

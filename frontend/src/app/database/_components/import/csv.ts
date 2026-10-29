@@ -133,7 +133,6 @@ function isValidJoinedAt(value: string) {
     );
   if (!match) return false;
   const [, year, month, day] = match;
-  // Date.parse normalizes impossible days such as February 30; reject them first.
   const calendarDate = new Date(`${year}-${month}-${day}T00:00:00Z`);
   const timestamp = Date.parse(value);
   return (

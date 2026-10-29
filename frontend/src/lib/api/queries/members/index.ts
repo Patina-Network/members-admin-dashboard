@@ -245,9 +245,34 @@ export const useBulkAddMembersMutation = () => {
         );
       return result.data;
     },
-    onSettled: async () => {
+    onSettled: async (data) => {
       await queryClient.cancelQueries({ queryKey: membersKey });
-      await queryClient.invalidateQueries({ queryKey: membersKey });
+      const imported = new Map<number, Member>();
+      for (const result of data?.results ?? []) {
+        if (result.member) imported.set(result.member.member_id, result.member);
+      }
+      if (imported.size) {
+        queryClient.setQueryData<MemberList>(membersKey, (current) => {
+          const existing = current?.members ?? [];
+          const existingIds = new Set(
+            existing.map((member) => member.member_id),
+          );
+          const added = [...imported.values()].filter(
+            (member) => !existingIds.has(member.member_id),
+          );
+          return {
+            ...current,
+            members: [
+              ...added,
+              ...existing.map(
+                (member) => imported.get(member.member_id) ?? member,
+              ),
+            ],
+            total: (current?.total ?? 0) + added.length,
+          };
+        });
+      }
+      void queryClient.invalidateQueries({ queryKey: membersKey });
     },
   });
 };

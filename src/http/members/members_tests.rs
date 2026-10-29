@@ -757,7 +757,10 @@ impl members::admin::members_admin_service_server::MembersAdminService for Membe
         &self,
         request: tonic::Request<members::admin::BulkMemberOperationsRequest>,
     ) -> Result<GrpcResponse<members::admin::BulkMemberOperationsResponse>, Status> {
-        use members::admin::*;
+        use members::admin::{
+            BulkMemberOperationsResponse, MemberCreated, MemberOperationFailed,
+            MemberOperationResult, member_operation, member_operation_result,
+        };
         assert_eq!(request.metadata().get("profile").unwrap(), "core_admin");
         assert!(request.metadata().contains_key("grpc-timeout"));
         let operations = request.into_inner().operations;
