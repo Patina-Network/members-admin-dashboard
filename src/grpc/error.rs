@@ -12,6 +12,7 @@ pub enum UpstreamError {
     InvalidArgument,
     NotFound,
     AlreadyExists,
+    Conflict,
     Unauthenticated,
     PermissionDenied,
     ResourceExhausted,
@@ -41,6 +42,10 @@ impl UpstreamError {
     pub fn status_and_body(&self) -> (StatusCode, ErrorBody) {
         let (status, error) = match self {
             Self::InvalidArgument => (StatusCode::BAD_REQUEST, "invalid request"),
+            Self::Conflict => (
+                StatusCode::CONFLICT,
+                "member changed since it was opened; reopen it before saving",
+            ),
             Self::NotFound => (StatusCode::NOT_FOUND, "not found"),
             Self::AlreadyExists => (StatusCode::CONFLICT, "already exists"),
             Self::Unauthenticated => (StatusCode::UNAUTHORIZED, "authentication required"),

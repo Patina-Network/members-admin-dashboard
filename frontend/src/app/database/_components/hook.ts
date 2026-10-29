@@ -1,7 +1,11 @@
 import { useForm } from "@mantine/form";
 
 import type { MemberFormValues } from "@/app/database/_components/types";
-import type { MemberDetails, NewMember } from "@/lib/api/generated/types.gen";
+import type {
+  MemberDetails,
+  MemberUpdate,
+  NewMember,
+} from "@/lib/api/generated/types.gen";
 
 function validateSocialUsername(value: string) {
   return /[\s/@?#]/u.test(value.trim()) ?
@@ -24,12 +28,19 @@ const initialValues: MemberFormValues = {
   role: "",
 };
 
-export const useMemberForm = (values?: Partial<MemberFormValues>) => {
+export const useMemberForm = (
+  initial?: Partial<MemberFormValues>,
+  editing = false,
+) => {
+  const discordChanged = (values: MemberFormValues) =>
+    !editing ||
+    values.discordId !== initial?.discordId ||
+    values.discordUsername !== initial?.discordUsername;
   const form = useForm<
     MemberFormValues,
     (values: MemberFormValues) => NewMember
   >({
-    initialValues: { ...initialValues, ...values },
+    initialValues: { ...initialValues, ...initial },
     onValuesChange: (current, previous) => {
       if (
         current.discordId !== previous.discordId ||
@@ -41,6 +52,7 @@ export const useMemberForm = (values?: Partial<MemberFormValues>) => {
     },
     validate: {
       discordId: (value, values) => {
+        if (!discordChanged(values)) return null;
         const id = value.trim();
         if (!id)
           return values.discordUsername.trim() ?
@@ -55,7 +67,7 @@ export const useMemberForm = (values?: Partial<MemberFormValues>) => {
           : "Enter a valid Discord ID";
       },
       discordUsername: (value, values) =>
-        values.discordId.trim() && !value.trim() ?
+        discordChanged(values) && values.discordId.trim() && !value.trim() ?
           "Discord username is required with an ID"
         : null,
       linkedinUsername: validateSocialUsername,
@@ -67,6 +79,7 @@ export const useMemberForm = (values?: Partial<MemberFormValues>) => {
       firstName: (value) => (value.trim() ? null : "First name is required"),
       lastName: (value) => (value.trim() ? null : "Last name is required"),
       joinedAt: (value) => {
+        if (editing) return null;
         if (!value) return null;
         const date = new Date(value);
         if (Number.isNaN(date.getTime())) return "Enter a valid date and time";
@@ -102,18 +115,41 @@ export const useEditMemberForm = (member: MemberDetails) => {
         .toISOString()
         .slice(0, 19)
     : "";
-  return useMemberForm({
-    email: member.email,
-    firstName: member.first_name,
-    lastName: member.last_name,
-    joinedAt,
-    linkedinUsername: member.linkedin_username ?? "",
-    instagramUsername: member.instagram_username ?? "",
-    career: member.career ?? "",
-    industry: member.industry ?? "",
-    profile: member.profile ?? "",
-    role: member.role ?? "",
-    discordId: member.discord_id ?? "",
-    discordUsername: member.discord_username ?? "",
-  });
+  const form = useMemberForm(
+    {
+      email: member.email,
+      firstName: member.first_name,
+      lastName: member.last_name,
+      joinedAt,
+      linkedinUsername: member.linkedin_username ?? "",
+      instagramUsername: member.instagram_username ?? "",
+      career: member.career ?? "",
+      industry: member.industry ?? "",
+      profile: member.profile ?? "",
+      role: member.role ?? "",
+      discordId: member.discord_id ?? "",
+      discordUsername: member.discord_username ?? "",
+    },
+    true,
+  );
+  const changedFields = (values: NewMember): MemberUpdate => {
+    const body: MemberUpdate = { expected_updated_at: member.updated_at };
+    if (form.isDirty("email")) body.email = values.email;
+    if (form.isDirty("firstName")) body.first_name = values.first_name;
+    if (form.isDirty("lastName")) body.last_name = values.last_name;
+    if (form.isDirty("discordId") || form.isDirty("discordUsername")) {
+      body.discord_id = values.discord_id;
+      body.discord_username = values.discord_username;
+    }
+    if (form.isDirty("linkedinUsername"))
+      body.linkedin_username = values.linkedin_username;
+    if (form.isDirty("instagramUsername"))
+      body.instagram_username = values.instagram_username;
+    if (form.isDirty("career")) body.career = values.career;
+    if (form.isDirty("industry")) body.industry = values.industry;
+    if (form.isDirty("profile")) body.profile = values.profile;
+    if (form.isDirty("role")) body.role = values.role;
+    return body;
+  };
+  return { form, changedFields };
 };

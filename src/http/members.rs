@@ -85,41 +85,44 @@ impl TryFrom<NewMember> for CreateMemberRequest {
     }
 }
 
-fn validate_update_fields(input: &CreateMemberRequest) -> Result<(), UpstreamError> {
-    let valid_email = !input.email.chars().any(char::is_whitespace)
-        && input.email.matches('@').count() == 1
-        && input.email.split_once('@').is_some_and(|(local, domain)| {
-            !local.is_empty()
-                && domain.contains('.')
-                && !domain.starts_with('.')
-                && !domain.ends_with('.')
-        });
-    let invalid_username = |value: &Option<String>| {
-        value.as_ref().is_some_and(|value| {
-            value
-                .chars()
-                .any(|c| c.is_whitespace() || matches!(c, '/' | '@' | '?' | '#'))
-        })
-    };
-    let future_joined_at = input.joined_at.as_ref().is_some_and(|date| {
-        let now = time::OffsetDateTime::now_utc();
-        date.seconds > now.unix_timestamp()
-            || (date.seconds == now.unix_timestamp()
-                && i64::from(date.nanos) > i64::from(now.nanosecond()))
-    });
-    if !valid_email
-        || input.first_name.is_empty()
-        || input.last_name.is_empty()
-        || input.discord_id.is_some() != input.discord_username.is_some()
-        || input.discord_id.as_ref().is_some_and(|id| {
-            !id.bytes().all(|byte| byte.is_ascii_digit())
-                || id.parse::<u64>().map_or(true, |id| id == 0)
-        })
-        || invalid_username(&input.linkedin_username)
-        || invalid_username(&input.instagram_username)
-        || future_joined_at
+fn validate_update_fields(
+    input: &members::admin::UpdateMemberRequest,
+) -> Result<(), UpstreamError> {
+    if input.email.as_ref().is_some_and(|email| {
+        email.chars().any(char::is_whitespace)
+            || email.matches('@').count() != 1
+            || !email.split_once('@').is_some_and(|(local, domain)| {
+                !local.is_empty()
+                    && domain.contains('.')
+                    && !domain.starts_with('.')
+                    && !domain.ends_with('.')
+            })
+    }) || input.first_name.as_ref().is_some_and(String::is_empty)
+        || input.last_name.as_ref().is_some_and(String::is_empty)
     {
         return Err(UpstreamError::InvalidArgument);
+    }
+    if input.discord_id.is_some() != input.discord_username.is_some() {
+        return Err(UpstreamError::InvalidArgument);
+    }
+    if let (Some(id), Some(username)) = (&input.discord_id, &input.discord_username)
+        && (id.is_empty() != username.is_empty()
+            || (!id.is_empty()
+                && (!id.bytes().all(|byte| byte.is_ascii_digit())
+                    || id.parse::<u64>().map_or(true, |id| id == 0))))
+    {
+        return Err(UpstreamError::InvalidArgument);
+    }
+    for value in [&input.linkedin_username, &input.instagram_username]
+        .into_iter()
+        .flatten()
+    {
+        if value
+            .chars()
+            .any(|c| c.is_whitespace() || matches!(c, '/' | '@' | '?' | '#'))
+        {
+            return Err(UpstreamError::InvalidArgument);
+        }
     }
     Ok(())
 }
@@ -144,12 +147,12 @@ fn optional(value: Option<String>) -> Option<String> {
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 /// Optional fields omitted from an update are preserved. Explicit null or an empty string
-/// clears optional text fields; null clears role. A missing/null joined date is preserved.
+/// clears optional text fields; null clears role. Joined dates cannot be updated.
 pub struct MemberUpdate {
-    email: String,
-    first_name: String,
-    last_name: String,
-    joined_at: Option<String>,
+    expected_updated_at: String,
+    email: Option<String>,
+    first_name: Option<String>,
+    last_name: Option<String>,
     #[serde(default, deserialize_with = "deserialize_update")]
     discord_id: Option<Option<String>>,
     #[serde(default, deserialize_with = "deserialize_update")]
@@ -176,51 +179,29 @@ impl MemberUpdate {
         if member_id <= 0 {
             return Err(UpstreamError::InvalidArgument);
         }
-        let discord_id = update_string(self.discord_id);
-        let discord_username = update_string(self.discord_username);
-        // Discord edits are submitted as a pair so validation never depends on stale browser data.
-        if discord_id.is_some() != discord_username.is_some() {
+        if self.expected_updated_at.is_empty() {
             return Err(UpstreamError::InvalidArgument);
         }
-        let linkedin_username = update_string(self.linkedin_username);
-        let instagram_username = update_string(self.instagram_username);
-        let career = update_string(self.career);
-        let industry = update_string(self.industry);
-        let profile = update_string(self.profile);
-        let role = self.role.map(|role| {
-            role.map(Into::into)
-                .unwrap_or(members::MemberRole::Unspecified as i32)
-        });
-        let fields = CreateMemberRequest::try_from(NewMember {
-            email: self.email,
-            first_name: self.first_name,
-            last_name: self.last_name,
-            joined_at: self.joined_at,
-            discord_id: discord_id.clone(),
-            discord_username: discord_username.clone(),
-            linkedin_username: linkedin_username.clone(),
-            instagram_username: instagram_username.clone(),
-            career: career.clone(),
-            industry: industry.clone(),
-            profile: profile.clone(),
-            role: None,
-        })?;
-        validate_update_fields(&fields)?;
-        Ok(members::admin::UpdateMemberRequest {
+        let request = members::admin::UpdateMemberRequest {
             member_id,
-            email: Some(fields.email),
-            first_name: Some(fields.first_name),
-            last_name: Some(fields.last_name),
-            joined_at: fields.joined_at,
-            discord_id,
-            discord_username,
-            linkedin_username,
-            instagram_username,
-            career,
-            industry,
-            profile,
-            role,
-        })
+            email: self.email.map(|v| v.trim().to_owned()),
+            first_name: self.first_name.map(|v| v.trim().to_owned()),
+            last_name: self.last_name.map(|v| v.trim().to_owned()),
+            joined_at: None,
+            discord_id: update_string(self.discord_id),
+            discord_username: update_string(self.discord_username),
+            linkedin_username: update_string(self.linkedin_username),
+            instagram_username: update_string(self.instagram_username),
+            career: update_string(self.career),
+            industry: update_string(self.industry),
+            profile: update_string(self.profile),
+            role: self.role.map(|role| {
+                role.map(Into::into)
+                    .unwrap_or(members::MemberRole::Unspecified as i32)
+            }),
+        };
+        validate_update_fields(&request)?;
+        Ok(request)
     }
 }
 
@@ -245,15 +226,61 @@ pub async fn update(
     body: Result<Json<MemberUpdate>, JsonRejection>,
 ) -> Result<UpdateResponse, UpstreamError> {
     let mut client = state.client.clone();
-    update_with(
+    let mut reader = state.client.clone();
+    checked_update_with(
         member_id,
         body,
         state.config.members_admin_service_grpc_timeout,
+        |request| async move { reader.get_sensitive_member(request).await },
         |request| async move { client.update_member(request).await },
     )
     .await
 }
 
+// This preflight detects stale forms. Atomic compare-and-update requires upstream RPC support.
+async fn checked_update_with<R, RFut, W, WFut>(
+    member_id: i32,
+    body: Result<Json<MemberUpdate>, JsonRejection>,
+    timeout: Duration,
+    read: R,
+    write: W,
+) -> Result<UpdateResponse, UpstreamError>
+where
+    R: FnOnce(tonic::Request<members::GetMemberRequest>) -> RFut,
+    RFut: Future<
+        Output = Result<tonic::Response<members::admin::GetSensitiveMemberResponse>, tonic::Status>,
+    >,
+    W: FnOnce(tonic::Request<members::admin::UpdateMemberRequest>) -> WFut,
+    WFut: Future<
+        Output = Result<tonic::Response<members::admin::UpdateMemberResponse>, tonic::Status>,
+    >,
+{
+    let Json(body) = body.map_err(|_| UpstreamError::InvalidArgument)?;
+    let expected = body.expected_updated_at.clone();
+    let request = body.into_request(member_id)?;
+    let current = grpc::call_admin(
+        timeout,
+        members::GetMemberRequest {
+            identifier: Some(members::get_member_request::Identifier::MemberId(member_id)),
+        },
+        read,
+    )
+    .await?
+    .member
+    .ok_or(UpstreamError::Failed)?;
+    if current
+        .updated_at
+        .as_ref()
+        .map(ToString::to_string)
+        .as_deref()
+        != Some(expected.as_str())
+    {
+        return Err(UpstreamError::Conflict);
+    }
+    send_update(request, timeout, write).await
+}
+
+#[cfg(test)]
 async fn update_with<F, Fut>(
     member_id: i32,
     body: Result<Json<MemberUpdate>, JsonRejection>,
@@ -267,7 +294,21 @@ where
     >,
 {
     let Json(body) = body.map_err(|_| UpstreamError::InvalidArgument)?;
-    let response = grpc::call_admin(timeout, body.into_request(member_id)?, rpc).await?;
+    send_update(body.into_request(member_id)?, timeout, rpc).await
+}
+
+async fn send_update<F, Fut>(
+    request: members::admin::UpdateMemberRequest,
+    timeout: Duration,
+    rpc: F,
+) -> Result<UpdateResponse, UpstreamError>
+where
+    F: FnOnce(tonic::Request<members::admin::UpdateMemberRequest>) -> Fut,
+    Fut: Future<
+        Output = Result<tonic::Response<members::admin::UpdateMemberResponse>, tonic::Status>,
+    >,
+{
+    let response = grpc::call_admin(timeout, request, rpc).await?;
     Ok(UpdateResponse::Success(
         response.member.ok_or(UpstreamError::Failed)?.into(),
     ))
@@ -314,6 +355,7 @@ impl From<SensitiveMember> for Member {
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct MemberDetails {
+    updated_at: String,
     #[serde(flatten)]
     member: Member,
     linkedin_username: Option<String>,
@@ -381,6 +423,10 @@ where
 impl From<SensitiveMember> for MemberDetails {
     fn from(value: SensitiveMember) -> Self {
         Self {
+            updated_at: value
+                .updated_at
+                .map(|date| date.to_string())
+                .unwrap_or_default(),
             linkedin_username: value.linkedin_username.clone(),
             instagram_username: value.instagram_username.clone(),
             career: value.career.clone(),
@@ -543,12 +589,12 @@ mod tests {
     async fn update_forwards_admin_metadata_and_propagates_errors() {
         for reply in [0, 1, 2] {
             let body = super::MemberUpdate {
-                email: "person@example.com".into(),
-                first_name: "First".into(),
-                last_name: "Last".into(),
+                expected_updated_at: "2020-01-01T00:00:00Z".into(),
+                email: Some("person@example.com".into()),
+                first_name: Some("First".into()),
+                last_name: Some("Last".into()),
                 discord_id: None,
                 discord_username: None,
-                joined_at: None,
                 linkedin_username: None,
                 instagram_username: None,
                 career: None,
@@ -590,17 +636,14 @@ mod tests {
     #[test]
     fn update_forwards_all_form_fields() {
         let input: super::MemberUpdate = serde_json::from_value(serde_json::json!({
-            "email": "person@example.com", "first_name": "First", "last_name": "Last",
-            "joined_at": "2020-01-02T03:04:05Z", "linkedin_username": " alex ",
+            "expected_updated_at": "2020-01-01T00:00:00Z", "email": "person@example.com", "first_name": "First", "last_name": "Last",
+            "linkedin_username": " alex ",
             "instagram_username": " alex.photo ", "career": " Engineer ",
             "industry": " Technology ", "profile": " Private notes ", "role": "board"
         }))
         .unwrap();
         let request = input.into_request(42).unwrap();
-        assert_eq!(
-            request.joined_at.unwrap().to_string(),
-            "2020-01-02T03:04:05Z"
-        );
+        assert!(request.joined_at.is_none());
         assert_eq!(request.linkedin_username.as_deref(), Some("alex"));
         assert_eq!(request.instagram_username.as_deref(), Some("alex.photo"));
         assert_eq!(request.career.as_deref(), Some("Engineer"));
@@ -612,12 +655,12 @@ mod tests {
     #[test]
     fn update_normalizes_and_clears_optional_fields() {
         let input = super::MemberUpdate {
-            email: " person@example.com ".into(),
-            first_name: " First ".into(),
-            last_name: " Last ".into(),
+            expected_updated_at: "2020-01-01T00:00:00Z".into(),
+            email: Some(" person@example.com ".into()),
+            first_name: Some(" First ".into()),
+            last_name: Some(" Last ".into()),
             discord_id: Some(None),
             discord_username: Some(Some(" ".into())),
-            joined_at: None,
             linkedin_username: Some(None),
             instagram_username: None,
             career: None,
@@ -647,12 +690,12 @@ mod tests {
             ("123", true),
         ] {
             let input = super::MemberUpdate {
-                email: "person@example.com".into(),
-                first_name: "First".into(),
-                last_name: "Last".into(),
+                expected_updated_at: "2020-01-01T00:00:00Z".into(),
+                email: Some("person@example.com".into()),
+                first_name: Some("First".into()),
+                last_name: Some("Last".into()),
                 discord_id: Some(Some(id.into())),
                 discord_username: Some(Some("testuser".into())),
-                joined_at: None,
                 linkedin_username: None,
                 instagram_username: None,
                 career: None,
@@ -663,12 +706,12 @@ mod tests {
             assert_eq!(input.into_request(1).is_ok(), valid, "{id}");
         }
         let input = super::MemberUpdate {
-            email: "person@example.com".into(),
-            first_name: " ".into(),
-            last_name: "Last".into(),
+            expected_updated_at: "2020-01-01T00:00:00Z".into(),
+            email: Some("person@example.com".into()),
+            first_name: Some(" ".into()),
+            last_name: Some("Last".into()),
             discord_id: None,
             discord_username: None,
-            joined_at: None,
             linkedin_username: None,
             instagram_username: None,
             career: None,
@@ -690,12 +733,12 @@ mod tests {
             (1, "person@example.com", Some("123")),
         ] {
             let input = super::MemberUpdate {
-                email: email.into(),
-                first_name: "First".into(),
-                last_name: "Last".into(),
+                expected_updated_at: "2020-01-01T00:00:00Z".into(),
+                email: Some(email.into()),
+                first_name: Some("First".into()),
+                last_name: Some("Last".into()),
                 discord_id: discord_id.map(|id| Some(id.to_owned())),
                 discord_username: None,
-                joined_at: None,
                 linkedin_username: None,
                 instagram_username: None,
                 career: None,

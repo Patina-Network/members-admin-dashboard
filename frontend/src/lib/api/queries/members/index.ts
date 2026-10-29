@@ -139,6 +139,11 @@ export const useUpdateMemberMutation = () => {
         throw new Error(
           !result.response || result.response.status >= 500 ?
             "Could not confirm whether the member was updated. Reload before trying again."
+          : (
+            result.response.status === 409 &&
+            result.error?.error?.includes("member changed")
+          ) ?
+            "Another admin changed this member. Close and reopen the form to review their changes before saving."
           : result.response.status === 409 ?
             "A member with this email or social account already exists."
           : (result.error?.error ?? "Unable to update member."),

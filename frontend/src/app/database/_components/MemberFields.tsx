@@ -21,6 +21,7 @@ const roleOptions = [
 
 export default function MemberFields({
   form,
+  joinedAtReadOnly = false,
   pending,
   details,
   setDetails,
@@ -50,6 +51,7 @@ export default function MemberFields({
         {...form.getInputProps("joinedAt")}
         label="Joined At"
         type="datetime-local"
+        readOnly={joinedAtReadOnly}
         disabled={pending}
       />
       <NativeSelect

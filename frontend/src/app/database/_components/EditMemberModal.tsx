@@ -34,27 +34,16 @@ export default function EditMemberModal({
 
 function EditMemberForm({ member, onClose }: EditMemberFormProps) {
   const [details, setDetails] = useState<string | null>(null);
-  const form = useEditMemberForm(member);
+  const { form, changedFields } = useEditMemberForm(member);
   const update = useUpdateMemberMutation();
   const submitting = useRef(false);
   const submit = (values: NewMember) => {
     if (submitting.current) return;
-    if (member.joined_at && !values.joined_at) {
-      form.setFieldError(
-        "joinedAt",
-        "Enter a joined date. An existing date cannot be cleared.",
-      );
-      return;
-    }
     submitting.current = true;
     update.mutate(
       {
         memberId: member.member_id,
-        body: {
-          ...values,
-          joined_at:
-            form.isDirty("joinedAt") ? values.joined_at : member.joined_at,
-        },
+        body: changedFields(values),
       },
       {
         onSuccess: () => {
@@ -104,6 +93,7 @@ function EditMemberForm({ member, onClose }: EditMemberFormProps) {
             Member #{member.member_id}
           </Text>
           <MemberFields
+            joinedAtReadOnly
             form={form}
             pending={update.isPending}
             details={details}

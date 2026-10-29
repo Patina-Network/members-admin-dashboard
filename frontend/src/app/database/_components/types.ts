@@ -38,6 +38,7 @@ export type EditMemberFormProps = {
 };
 
 export type MemberFieldsProps = {
+  joinedAtReadOnly?: boolean;
   form: ReturnType<typeof useMemberForm>;
   pending: boolean;
   details: string | null;
