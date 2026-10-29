@@ -791,17 +791,22 @@ describe("archive member", () => {
     renderPage();
     const user = userEvent.setup();
     await user.click(
-      await screen.findByRole("button", { name: "Delete member 1" }),
+      await screen.findByRole("button", { name: "Archive member 1" }),
     );
     expect(
       screen.getByText(/Their record will be archived and retained/),
     ).toHaveTextContent("First Last");
+    const confirmation = within(screen.getByRole("dialog"));
+    expect(confirmation.getByText(`Email: ${member.email}`)).toBeVisible();
+    expect(
+      confirmation.getByText(`Member ID: ${member.member_id}`),
+    ).toBeVisible();
     expect(archive).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     await waitFor(() =>
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
-    await user.click(screen.getByRole("button", { name: "Delete member 1" }));
+    await user.click(screen.getByRole("button", { name: "Archive member 1" }));
     vi.mocked(list).mockResolvedValue(memberList([]));
     await user.click(screen.getByRole("button", { name: "Archive member" }));
     await waitFor(() =>
@@ -828,7 +833,7 @@ describe("archive member", () => {
     renderPage(3);
     const user = userEvent.setup();
     await user.click(
-      await screen.findByRole("button", { name: "Delete member 1" }),
+      await screen.findByRole("button", { name: "Archive member 1" }),
     );
     const confirm = screen.getByRole("button", { name: "Archive member" });
     fireEvent.click(confirm);

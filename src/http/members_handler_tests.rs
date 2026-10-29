@@ -503,3 +503,413 @@ async fn checked_update_requires_version_and_stops_when_read_fails() {
     .into_response();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
+
+#[test]
+fn update_rejects_invalid_email_shapes() {
+    for email in [
+        "",
+        "person @example.com",
+        "person@example.com\nextra",
+        "a@@example.com",
+        "@example.com",
+        "person@example",
+        "person@.example.com",
+        "person@example.com.",
+    ] {
+        let body: super::MemberUpdate = serde_json::from_value(serde_json::json!({
+            "expected_updated_at": "2020-01-01T00:00:00Z", "email": email
+        }))
+        .unwrap();
+        assert!(
+            matches!(
+                body.into_request(42),
+                Err(super::UpstreamError::InvalidArgument)
+            ),
+            "{email:?}"
+        );
+    }
+}
+
+#[test]
+fn update_requires_discord_fields_to_be_set_or_cleared_together() {
+    for (id, username) in [("", "person"), ("123", ""), (" ", "person"), ("123", " ")] {
+        let body: super::MemberUpdate = serde_json::from_value(serde_json::json!({
+            "expected_updated_at": "2020-01-01T00:00:00Z",
+            "discord_id": id, "discord_username": username
+        }))
+        .unwrap();
+        assert!(
+            matches!(
+                body.into_request(42),
+                Err(super::UpstreamError::InvalidArgument)
+            ),
+            "{id:?}, {username:?}"
+        );
+    }
+}
+
+#[test]
+fn update_rejects_reserved_characters_in_social_usernames() {
+    for field in ["linkedin_username", "instagram_username"] {
+        for value in [
+            "two words",
+            "two\twords",
+            "user/name",
+            "@name",
+            "name?query",
+            "name#fragment",
+        ] {
+            let mut input = serde_json::json!({"expected_updated_at": "2020-01-01T00:00:00Z"});
+            input[field] = value.into();
+            let body: super::MemberUpdate = serde_json::from_value(input).unwrap();
+            assert!(
+                matches!(
+                    body.into_request(42),
+                    Err(super::UpstreamError::InvalidArgument)
+                ),
+                "{field}={value:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn details_serializes_every_role_and_handles_missing_timestamps() {
+    for (role, expected) in [
+        (
+            Some(members::MemberRole::Board as i32),
+            serde_json::json!("board"),
+        ),
+        (
+            Some(members::MemberRole::Mentor as i32),
+            serde_json::json!("mentor"),
+        ),
+        (
+            Some(members::MemberRole::Mentee as i32),
+            serde_json::json!("mentee"),
+        ),
+        (
+            Some(members::MemberRole::Unspecified as i32),
+            serde_json::Value::Null,
+        ),
+        (Some(i32::MAX), serde_json::Value::Null),
+        (None, serde_json::Value::Null),
+    ] {
+        let response = super::details_with(42, Duration::from_secs(1), |_| async move {
+            Ok(GrpcResponse::new(
+                members::admin::GetSensitiveMemberResponse {
+                    member: Some(SensitiveMember {
+                        role,
+                        ..sensitive_member()
+                    }),
+                },
+            ))
+        })
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        assert_eq!(body["role"], expected);
+        assert_eq!(body["updated_at"], "");
+    }
+}
+
+#[tokio::test]
+async fn checked_update_stops_on_missing_member_or_version() {
+    for missing_member in [true, false] {
+        let body = serde_json::from_value(serde_json::json!({
+            "expected_updated_at": "2020-01-01T00:00:00Z", "first_name": "Changed"
+        }))
+        .unwrap();
+        let response = super::checked_update_with(
+            42,
+            Ok(Json(body)),
+            Duration::from_secs(1),
+            |request| async move {
+                assert!(matches!(
+                    request.into_inner().identifier,
+                    Some(members::get_member_request::Identifier::MemberId(42))
+                ));
+                Ok(GrpcResponse::new(
+                    members::admin::GetSensitiveMemberResponse {
+                        member: (!missing_member).then(sensitive_member),
+                    },
+                ))
+            },
+            |_| async { panic!("missing member or version must not write") },
+        )
+        .await
+        .into_response();
+        assert_eq!(
+            response.status(),
+            if missing_member {
+                StatusCode::BAD_GATEWAY
+            } else {
+                StatusCode::CONFLICT
+            }
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn checked_update_read_timeout_prevents_writes() {
+    let body = serde_json::from_value(serde_json::json!({
+        "expected_updated_at": "2020-01-01T00:00:00Z"
+    }))
+    .unwrap();
+    let response = super::checked_update_with(
+        42,
+        Ok(Json(body)),
+        Duration::from_secs(1),
+        |_| std::future::pending(),
+        |_| async { panic!("timed out reads must not write") },
+    )
+    .await
+    .into_response();
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    assert_eq!(
+        json_body(response).await,
+        serde_json::json!({"error": "upstream timeout"})
+    );
+}
+
+struct ArchiveGrpc {
+    reply: Option<Reply>,
+}
+
+#[tonic::async_trait]
+impl members::admin::members_admin_service_server::MembersAdminService for ArchiveGrpc {
+    async fn get_sensitive_member(
+        &self,
+        _: tonic::Request<members::GetMemberRequest>,
+    ) -> Result<GrpcResponse<members::admin::GetSensitiveMemberResponse>, Status> {
+        panic!("archive must not call get_sensitive_member")
+    }
+    async fn list_sensitive_members(
+        &self,
+        _: tonic::Request<members::ListMembersRequest>,
+    ) -> Result<GrpcResponse<members::admin::ListSensitiveMembersResponse>, Status> {
+        panic!("archive must not call list_sensitive_members")
+    }
+    async fn create_member(
+        &self,
+        _: tonic::Request<members::admin::CreateMemberRequest>,
+    ) -> Result<GrpcResponse<members::admin::CreateMemberResponse>, Status> {
+        panic!("archive must not call create_member")
+    }
+    async fn update_member(
+        &self,
+        _: tonic::Request<members::admin::UpdateMemberRequest>,
+    ) -> Result<GrpcResponse<members::admin::UpdateMemberResponse>, Status> {
+        panic!("archive must not call update_member")
+    }
+    async fn bulk_member_operations(
+        &self,
+        _: tonic::Request<members::admin::BulkMemberOperationsRequest>,
+    ) -> Result<GrpcResponse<members::admin::BulkMemberOperationsResponse>, Status> {
+        panic!("archive must not call bulk_member_operations")
+    }
+    async fn archive_member(
+        &self,
+        request: tonic::Request<members::admin::ArchiveMemberRequest>,
+    ) -> Result<GrpcResponse<members::admin::ArchiveMemberResponse>, Status> {
+        assert_eq!(request.metadata().get("profile").unwrap(), "core_admin");
+        assert!(request.metadata().contains_key("grpc-timeout"));
+        assert_eq!(request.into_inner().member_id, 42);
+        match self.reply {
+            Some(Reply::Success) => Ok(GrpcResponse::new(members::admin::ArchiveMemberResponse {
+                member: Some(sensitive_member()),
+            })),
+            Some(Reply::MissingMember) => {
+                Ok(GrpcResponse::new(members::admin::ArchiveMemberResponse {
+                    member: None,
+                }))
+            }
+            Some(Reply::Error(code)) => Err(Status::new(code, "private upstream details")),
+            None => std::future::pending().await,
+        }
+    }
+}
+
+struct ArchiveServer(tokio::task::JoinHandle<()>);
+
+impl Drop for ArchiveServer {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+async fn archive_server(reply: Option<Reply>) -> (crate::http::state::AppState, ArchiveServer) {
+    use members::admin::members_admin_service_server::MembersAdminServiceServer;
+    use tokio_stream::wrappers::TcpListenerStream;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = ArchiveServer(tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(MembersAdminServiceServer::new(ArchiveGrpc { reply }))
+            .serve_with_incoming(TcpListenerStream::new(listener))
+            .await
+            .unwrap();
+    }));
+    let channel = tonic::transport::Endpoint::from_shared(format!("http://{address}"))
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+    let mut state = crate::http::state::test_state();
+    state.client =
+        members::admin::members_admin_service_client::MembersAdminServiceClient::new(channel);
+    (state, server)
+}
+
+#[tokio::test]
+async fn archive_handler_calls_generated_client_and_returns_empty_204() {
+    let (state, _server) = archive_server(Some(Reply::Success)).await;
+    let response = super::archive(axum::extract::State(state), axum::extract::Path(42))
+        .await
+        .into_response();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn archive_handler_maps_rpc_failures_without_leaking_details() {
+    for (reply, status, message) in [
+        (
+            Reply::MissingMember,
+            StatusCode::BAD_GATEWAY,
+            "upstream request failed",
+        ),
+        (
+            Reply::Error(Code::NotFound),
+            StatusCode::NOT_FOUND,
+            "not found",
+        ),
+        (
+            Reply::Error(Code::PermissionDenied),
+            StatusCode::FORBIDDEN,
+            "permission denied",
+        ),
+        (
+            Reply::Error(Code::Unavailable),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "service unavailable",
+        ),
+        (
+            Reply::Error(Code::DeadlineExceeded),
+            StatusCode::GATEWAY_TIMEOUT,
+            "upstream timeout",
+        ),
+    ] {
+        let (state, _server) = archive_server(Some(reply)).await;
+        let response = super::archive(axum::extract::State(state), axum::extract::Path(42))
+            .await
+            .into_response();
+        assert_eq!(response.status(), status);
+        assert_eq!(
+            json_body(response).await,
+            serde_json::json!({ "error": message })
+        );
+    }
+}
+
+#[tokio::test]
+async fn archive_handler_rejects_invalid_ids_without_calling_rpc() {
+    for member_id in [0, -1] {
+        let state = crate::http::state::test_state();
+        let response = super::archive(axum::extract::State(state), axum::extract::Path(member_id))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(response).await,
+            serde_json::json!({ "error": "invalid request" })
+        );
+    }
+}
+
+#[tokio::test]
+async fn archive_handler_enforces_configured_timeout() {
+    let (mut state, _server) = archive_server(None).await;
+    state.config.members_admin_service_grpc_timeout = Duration::from_millis(50);
+    let response = tokio::time::timeout(
+        Duration::from_secs(2),
+        super::archive(axum::extract::State(state), axum::extract::Path(42)),
+    )
+    .await
+    .expect("archive handler must enforce its timeout")
+    .into_response();
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    assert_eq!(
+        json_body(response).await,
+        serde_json::json!({ "error": "upstream timeout" })
+    );
+}
+
+#[test]
+fn openapi_describes_archive_success_and_error_responses() {
+    use utoipa::OpenApi;
+    let schema = serde_json::to_value(crate::http::openapi::ApiDoc::openapi()).unwrap();
+    let responses = &schema["paths"]["/api/members/{member_id}"]["delete"]["responses"];
+    assert!(responses["204"]["content"].is_null());
+    assert!(
+        responses["204"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("not permanently deleted")
+    );
+    for status in [
+        "400", "401", "403", "404", "409", "429", "502", "503", "504",
+    ] {
+        assert!(responses[status]["content"]["application/json"]["schema"].is_object());
+    }
+}
+
+#[tokio::test]
+async fn public_handlers_report_transport_failures_without_leaking_details() {
+    use axum::extract::{Path, State};
+    use members_grpc_service::members::{
+        admin::members_admin_service_client::MembersAdminServiceClient,
+        members_service_client::MembersServiceClient,
+    };
+    let channel = tonic::transport::Endpoint::from_static("http://127.0.0.1:0").connect_lazy();
+    let mut state = crate::http::state::test_state();
+    state.client = MembersAdminServiceClient::new(channel.clone());
+    state.members_client = MembersServiceClient::new(channel);
+    state.config.members_admin_service_grpc_timeout = Duration::from_secs(1);
+    let update = serde_json::from_value(serde_json::json!({
+        "expected_updated_at": "2020-01-01T00:00:00Z", "first_name": "Changed"
+    }))
+    .unwrap();
+    let responses = [
+        super::create(State(state.clone()), request_body(VALID_MEMBER).await)
+            .await
+            .into_response(),
+        super::update(State(state.clone()), Path(42), Ok(Json(update)))
+            .await
+            .into_response(),
+        super::archive(State(state.clone()), Path(42))
+            .await
+            .into_response(),
+        super::details(State(state.clone()), Path(42))
+            .await
+            .into_response(),
+        super::list(State(state)).await.into_response(),
+    ];
+    for response in responses {
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            json_body(response).await,
+            serde_json::json!({"error": "service unavailable"})
+        );
+    }
+}

@@ -55,6 +55,7 @@ export default function Header() {
             </Box>
             <Group visibleFrom="sm">{authButton}</Group>
             <Burger
+              aria-label="Menu button"
               opened={drawerOpened}
               onClick={toggleDrawer}
               hiddenFrom="sm"

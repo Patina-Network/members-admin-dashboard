@@ -33,6 +33,10 @@ export default function ArchiveMemberModal({
           will be removed from the active members list. Their record will be
           archived and retained.
         </Text>
+        <Stack gap="xs">
+          <Text>Email: {member.email}</Text>
+          <Text>Member ID: {member.member_id}</Text>
+        </Stack>
         {archive.error && (
           <Alert color="red" role="alert">
             {archive.error.message}
