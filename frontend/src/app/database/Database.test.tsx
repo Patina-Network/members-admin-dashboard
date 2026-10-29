@@ -761,6 +761,45 @@ describe("member list states", () => {
     expect(await screen.findByText("0 members")).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
+  it("pages the table and keeps the header on the full count", async () => {
+    const members = Array.from({ length: 11 }, (_, index) => ({
+      ...member,
+      member_id: index + 1,
+      email: `person${index + 1}@example.com`,
+    }));
+    vi.mocked(list).mockResolvedValue({
+      data: { members, total: 40 },
+      request: new Request("http://localhost/api/members"),
+      response,
+    });
+    renderPage();
+    expect(await screen.findByText("40 members")).toBeInTheDocument();
+    expect(screen.getByText("person1@example.com")).toBeInTheDocument();
+    expect(screen.queryByText("person11@example.com")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "2" }));
+    expect(screen.getByText("person11@example.com")).toBeInTheDocument();
+    expect(screen.queryByText("person1@example.com")).not.toBeInTheDocument();
+    expect(screen.getByText("40 members")).toBeInTheDocument();
+  });
+  it("shows the new member before a slow list finishes", async () => {
+    const pending = deferred<ReturnType<typeof memberList>>();
+    const refresh = deferred<ReturnType<typeof memberList>>();
+    vi.mocked(list)
+      .mockReturnValueOnce(pending.promise)
+      .mockReturnValueOnce(refresh.promise);
+    vi.mocked(create).mockResolvedValue(savedMember());
+    renderPage();
+    const user = await openForm();
+    await fillForm(user);
+    submitForm();
+    expect(await screen.findByText("1 member")).toBeInTheDocument();
+    expect(screen.getByText(member.email)).toBeInTheDocument();
+    await act(async () => pending.resolve(memberList([])));
+    expect(screen.getByText("1 member")).toBeInTheDocument();
+    expect(screen.getByText(member.email)).toBeInTheDocument();
+    await act(async () => refresh.resolve(memberList([member])));
+    expect(screen.getByText(member.email)).toBeInTheDocument();
+  });
   it("refetches after creation while the initial request is pending", async () => {
     const pending = deferred<ReturnType<typeof memberList>>();
     vi.mocked(list)

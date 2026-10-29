@@ -18,11 +18,21 @@ import ArchiveMemberModal from "@/app/database/_components/ArchiveMemberModal";
 import EditMemberModal from "@/app/database/_components/EditMemberModal";
 import { useMembersQuery } from "@/lib/api/queries/members";
 
+const membersPerPage = 10;
+
 export default function DatabasePage() {
   const [opened, { open, close }] = useDisclosure(false);
   const members = useMembersQuery();
+  const [page, setPage] = useState(1);
   const [editing, setEditing] = useState<Member | null>(null);
   const [archiving, setArchiving] = useState<Member | null>(null);
+  const allMembers = members.data?.members ?? [];
+  const pageCount = Math.max(1, Math.ceil(allMembers.length / membersPerPage));
+  const currentPage = Math.min(page, pageCount);
+  const visibleMembers = allMembers.slice(
+    (currentPage - 1) * membersPerPage,
+    currentPage * membersPerPage,
+  );
   return (
     <>
       <Group justify="space-between" mb="md">
@@ -98,7 +108,7 @@ export default function DatabasePage() {
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
-            {members.data?.members.map((member) => (
+            {visibleMembers.map((member) => (
               <Table.Tr key={member.member_id}>
                 <Table.Td>{member.member_id}</Table.Td>
                 <Table.Td>{member.email}</Table.Td>
@@ -151,7 +161,12 @@ export default function DatabasePage() {
         </Table>
       </Box>
       <Group justify="center" mt="md">
-        <Pagination total={1} value={1} disabled />
+        <Pagination
+          total={pageCount}
+          value={currentPage}
+          onChange={setPage}
+          disabled={pageCount === 1}
+        />
       </Group>
     </>
   );

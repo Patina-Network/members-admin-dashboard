@@ -66,9 +66,25 @@ export const useAddMemberMutation = () => {
   return useMutation({
     retry: false,
     mutationFn: createMember,
-    onSuccess: async () => {
+    onSuccess: async (member) => {
       await queryClient.cancelQueries({ queryKey: membersKey });
-      await queryClient.invalidateQueries({ queryKey: membersKey });
+      queryClient.setQueryData<MemberList>(membersKey, (current) => {
+        if (!current) return { members: [member], total: 1 };
+        if (current.members.some((row) => row.member_id === member.member_id)) {
+          return {
+            ...current,
+            members: current.members.map((row) =>
+              row.member_id === member.member_id ? member : row,
+            ),
+          };
+        }
+        return {
+          ...current,
+          members: [member, ...current.members],
+          total: current.total + 1,
+        };
+      });
+      void queryClient.invalidateQueries({ queryKey: membersKey });
     },
   });
 };
