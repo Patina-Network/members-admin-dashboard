@@ -7,17 +7,8 @@ import {
 } from "@mantine/core";
 
 import type { MemberFieldsProps } from "@/app/database/_components/types";
-import type { NewMember } from "@/lib/api/generated/types.gen";
 
-const roleLabels: Record<NonNullable<NewMember["role"]>, string> = {
-  board: "Board",
-  mentor: "Mentor",
-  mentee: "Mentee",
-};
-const roleOptions = [
-  { value: "", label: "Select a role" },
-  ...Object.entries(roleLabels).map(([value, label]) => ({ value, label })),
-];
+import { roleOptions } from "@/app/database/_components/memberRoles";
 
 export default function MemberFields({
   form,

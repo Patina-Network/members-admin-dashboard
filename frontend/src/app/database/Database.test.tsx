@@ -2,6 +2,7 @@ import { MantineProvider } from "@mantine/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
+  cleanup,
   fireEvent,
   render,
   screen,
@@ -9,7 +10,10 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import type { MemberDetails } from "@/lib/api/generated/types.gen";
 
 import DatabasePage from "@/app/database/Database.page";
 import {
@@ -29,7 +33,7 @@ vi.mock("@/lib/api/generated/sdk.gen", () => ({
   update: vi.fn(),
   list: vi.fn(),
 }));
-const member = {
+const member: MemberDetails = {
   updated_at: "2020-01-01T00:00:00Z",
   member_id: 1,
   email: "person@example.com",
@@ -38,9 +42,30 @@ const member = {
   joined_at: null,
   discord_id: null,
   discord_username: null,
+  role: null,
+  linkedin_username: null,
+  career: null,
 };
+function LocationProbe() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  return (
+    <>
+      <button onClick={() => navigate(-1)}>History back</button>
+      <button onClick={() => navigate(1)}>History forward</button>
+      <output aria-label="Current URL">
+        {location.pathname}
+        {location.search}
+      </output>
+    </>
+  );
+}
+
 const response = new Response(null, { status: 200 });
-function renderPage(mutationRetry: boolean | number = false) {
+function renderPage(
+  mutationRetry: boolean | number = false,
+  initialEntry = "/database",
+) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -50,7 +75,10 @@ function renderPage(mutationRetry: boolean | number = false) {
   render(
     <MantineProvider env="test">
       <QueryClientProvider client={queryClient}>
-        <DatabasePage />
+        <MemoryRouter initialEntries={[initialEntry]}>
+          <LocationProbe />
+          <DatabasePage />
+        </MemoryRouter>
       </QueryClientProvider>
     </MantineProvider>,
   );
@@ -59,9 +87,7 @@ function renderPage(mutationRetry: boolean | number = false) {
 async function openForm() {
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: "Add" }));
-  await user.click(
-    await screen.findByRole("button", { name: "Add One Member" }),
-  );
+  await screen.findByLabelText(/^Email/);
   return user;
 }
 async function fillForm(user: ReturnType<typeof userEvent.setup>) {
@@ -74,10 +100,14 @@ function deferred<T>() {
   let resolve: (value: T) => void = () => {
     throw new Error("Promise not initialized");
   };
-  const promise = new Promise<T>((complete) => {
+  let reject: (reason: unknown) => void = () => {
+    throw new Error("Promise not initialized");
+  };
+  const promise = new Promise<T>((complete, fail) => {
     resolve = complete;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function submitForm() {
@@ -126,7 +156,7 @@ beforeEach(() => {
   });
 });
 describe("add member", () => {
-  it("offers both modes, validates, submits, and refreshes the table and count", async () => {
+  it("opens the form, validates, submits, and refreshes the table and count", async () => {
     vi.mocked(create).mockResolvedValue({
       data: member,
       request: new Request("http://localhost/api/members"),
@@ -171,12 +201,8 @@ describe("add member", () => {
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
     await user.click(screen.getByRole("button", { name: "Add" }));
-    await user.click(
-      screen.getByRole("button", { name: "Upload Bulk Member(s)" }),
-    );
-    expect(
-      screen.getByText("Drag a CSV here or click to select one"),
-    ).toBeInTheDocument();
+    expect(await screen.findByLabelText(/^Email/)).toHaveValue("");
+    expect(screen.queryByText("Upload Bulk Member(s)")).not.toBeInTheDocument();
   });
   it("submits all optional member fields with trimmed values", async () => {
     vi.mocked(create).mockResolvedValue(savedMember());
@@ -226,7 +252,7 @@ describe("add member", () => {
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
     await user.click(screen.getByRole("button", { name: "Add" }));
-    await user.click(screen.getByRole("button", { name: "Add One Member" }));
+    await screen.findByLabelText(/^Email/);
     expect(screen.getByLabelText("LinkedIn Username")).toHaveValue("");
     expect(screen.getByLabelText("Profile notes")).toHaveValue("");
   });
@@ -343,7 +369,7 @@ describe("add member", () => {
     expect(
       within(screen.getByRole("dialog")).getByRole("button", { name: "Add" }),
     ).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Back" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
     await user.keyboard("{Escape}");
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     vi.mocked(list).mockResolvedValue(memberList([member]));
@@ -352,9 +378,7 @@ describe("add member", () => {
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
     await user.click(screen.getByRole("button", { name: "Add" }));
-    expect(
-      screen.getByRole("button", { name: "Add One Member" }),
-    ).toBeInTheDocument();
+    expect(screen.getByLabelText(/^Email/)).toBeInTheDocument();
   });
 
   it("does not automatically retry an uncertain write", async () => {
@@ -761,6 +785,166 @@ describe("member list states", () => {
     expect(await screen.findByText("0 members")).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
+  it("shows discord and role in the row and the rest under see more", async () => {
+    vi.mocked(list).mockResolvedValue(
+      memberList([
+        {
+          ...member,
+          discord_username: "deltaherb",
+          discord_id: "999",
+          joined_at: "2026-10-28T21:00:00Z",
+          role: "mentor",
+          linkedin_username: "angela",
+          career: "Engineer",
+        },
+      ]),
+    );
+    renderPage();
+    expect(await screen.findByText("deltaherb")).toBeInTheDocument();
+    expect(screen.getByText("Mentor")).toBeInTheDocument();
+    expect(screen.queryByText("Joined at:")).not.toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Show additional info for member 1" }),
+    );
+    expect(screen.getByText("Joined at:")).toBeInTheDocument();
+    expect(screen.getByText("999")).toBeInTheDocument();
+    expect(screen.getByText("angela")).toBeInTheDocument();
+    expect(screen.getByText("Engineer")).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Hide additional info for member 1" }),
+    );
+    expect(screen.queryByText("Joined at:")).not.toBeInTheDocument();
+  });
+  it("keeps the selected page after remounting with the saved URL", async () => {
+    const members = Array.from({ length: 21 }, (_, index) => ({
+      ...member,
+      member_id: index + 1,
+      email: `person${index + 1}@example.com`,
+    }));
+    vi.mocked(list).mockResolvedValue(memberList(members));
+    renderPage(false, "/database?filter=active");
+    await screen.findByText("person1@example.com");
+    await userEvent.click(screen.getByRole("button", { name: "2" }));
+    const savedUrl = screen.getByLabelText("Current URL").textContent ?? "";
+    expect(savedUrl).toBe("/database?filter=active&page=2");
+    cleanup();
+    const pending = deferred<ReturnType<typeof memberList>>();
+    vi.mocked(list).mockReturnValueOnce(pending.promise);
+    renderPage(false, savedUrl);
+    expect(screen.getByText("Loading members…")).toHaveAttribute(
+      "role",
+      "status",
+    );
+    expect(screen.getByLabelText("Current URL")).toHaveTextContent("page=2");
+    expect(
+      screen.queryByText("Members will appear here"),
+    ).not.toBeInTheDocument();
+    await act(async () => pending.resolve(memberList(members)));
+    expect(await screen.findByText("person11@example.com")).toBeInTheDocument();
+    expect(screen.queryByText("person1@example.com")).not.toBeInTheDocument();
+    expect(screen.queryByText("Loading members…")).not.toBeInTheDocument();
+  });
+
+  it.each(["bad", "-1", "1.5", "999"])(
+    "corrects an invalid saved page %s after loading",
+    async (page) => {
+      vi.mocked(list).mockResolvedValue(memberList([member]));
+      renderPage(false, `/database?page=${page}&filter=active`);
+      expect(await screen.findByText(member.email)).toBeInTheDocument();
+      await waitFor(() =>
+        expect(screen.getByLabelText("Current URL")).toHaveTextContent(
+          "/database?page=1&filter=active",
+        ),
+      );
+    },
+  );
+
+  it("searches all pages by name and resets pagination when the search changes", async () => {
+    const members = Array.from({ length: 21 }, (_, index) => ({
+      ...member,
+      member_id: index + 1,
+      email: `person${index + 1}@example.com`,
+      first_name: index === 0 ? "Angela" : "Nancy",
+      last_name: index === 0 ? "Yu" : "Huang",
+    }));
+    vi.mocked(list).mockResolvedValue(memberList(members));
+    renderPage(false, "/database?page=3");
+    await screen.findByText("person21@example.com");
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("Search by first name"), "ANG");
+    expect(screen.getByText("person1@example.com")).toBeInTheDocument();
+    expect(screen.queryByText("person21@example.com")).not.toBeInTheDocument();
+    expect(screen.getByText("1 matching member")).toBeInTheDocument();
+    expect(screen.getByText("21 members")).toBeInTheDocument();
+    expect(screen.getByLabelText("Current URL")).toHaveTextContent("page=1");
+    await user.clear(screen.getByLabelText("Search by first name"));
+    await user.type(screen.getByLabelText("Search by first name"), "Nobody");
+    expect(
+      screen.getByText("No members match your search"),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Clear" }));
+    expect(screen.getByLabelText("Search by first name")).toHaveValue("");
+    expect(screen.getByText("person1@example.com")).toBeInTheDocument();
+    expect(screen.getByLabelText("Current URL")).not.toHaveTextContent(
+      "search=",
+    );
+  });
+
+  it("restores the search and its second page from the URL", async () => {
+    const members = Array.from({ length: 12 }, (_, index) => ({
+      ...member,
+      member_id: index + 1,
+      email: `person${index + 1}@example.com`,
+      first_name: "Nancy",
+      last_name: "Huang",
+    }));
+    vi.mocked(list).mockResolvedValue(memberList(members));
+    renderPage(false, "/database?search=NAN&page=2");
+    expect(screen.getByLabelText("Search by first name")).toHaveValue("NAN");
+    expect(await screen.findByText("person11@example.com")).toBeInTheDocument();
+    expect(screen.queryByText("person1@example.com")).not.toBeInTheDocument();
+    expect(screen.getByText("12 matching members")).toBeInTheDocument();
+  });
+
+  it("pages the table and keeps the header on the full count", async () => {
+    const members = Array.from({ length: 11 }, (_, index) => ({
+      ...member,
+      member_id: index + 1,
+      email: `person${index + 1}@example.com`,
+    }));
+    vi.mocked(list).mockResolvedValue({
+      data: { members, total: 40 },
+      request: new Request("http://localhost/api/members"),
+      response,
+    });
+    renderPage();
+    expect(await screen.findByText("40 members")).toBeInTheDocument();
+    expect(screen.getByText("person1@example.com")).toBeInTheDocument();
+    expect(screen.queryByText("person11@example.com")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "2" }));
+    expect(screen.getByText("person11@example.com")).toBeInTheDocument();
+    expect(screen.queryByText("person1@example.com")).not.toBeInTheDocument();
+    expect(screen.getByText("40 members")).toBeInTheDocument();
+  });
+  it("shows the new member before a slow list finishes", async () => {
+    const pending = deferred<ReturnType<typeof memberList>>();
+    const refresh = deferred<ReturnType<typeof memberList>>();
+    vi.mocked(list)
+      .mockReturnValueOnce(pending.promise)
+      .mockReturnValueOnce(refresh.promise);
+    vi.mocked(create).mockResolvedValue(savedMember());
+    renderPage();
+    const user = await openForm();
+    await fillForm(user);
+    submitForm();
+    expect(await screen.findByText("1 member")).toBeInTheDocument();
+    expect(screen.getByText(member.email)).toBeInTheDocument();
+    await act(async () => pending.resolve(memberList([])));
+    expect(screen.getByText("1 member")).toBeInTheDocument();
+    expect(screen.getByText(member.email)).toBeInTheDocument();
+    await act(async () => refresh.resolve(memberList([member])));
+    expect(screen.getByText(member.email)).toBeInTheDocument();
+  });
   it("refetches after creation while the initial request is pending", async () => {
     const pending = deferred<ReturnType<typeof memberList>>();
     vi.mocked(list)
@@ -858,3 +1042,169 @@ describe("archive member", () => {
     expect(screen.getByText("1 member")).toBeInTheDocument();
   });
 });
+
+it("matches only the beginning of first names", async () => {
+  vi.mocked(list).mockResolvedValue(
+    memberList([
+      {
+        ...member,
+        member_id: 1,
+        first_name: "Sofia",
+        last_name: "Nguyen",
+        email: "sofia@example.com",
+      },
+      {
+        ...member,
+        member_id: 2,
+        first_name: "Frank",
+        last_name: "Lee",
+        email: "frank@example.com",
+      },
+      {
+        ...member,
+        member_id: 3,
+        first_name: "Anna",
+        last_name: "Foster",
+        email: "anna@example.com",
+      },
+    ]),
+  );
+  renderPage(false, "/database?search=f");
+  expect(await screen.findByText("frank@example.com")).toBeInTheDocument();
+  expect(screen.queryByText("sofia@example.com")).not.toBeInTheDocument();
+  expect(screen.queryByText("anna@example.com")).not.toBeInTheDocument();
+  expect(screen.getByText("1 matching member")).toBeInTheDocument();
+});
+
+it("filters by role from the button under Add and keeps that filter in the URL", async () => {
+  vi.mocked(list).mockResolvedValue(
+    memberList([
+      {
+        ...member,
+        member_id: 1,
+        first_name: "Sofia",
+        email: "sofia@example.com",
+        role: "mentee",
+      },
+      {
+        ...member,
+        member_id: 2,
+        first_name: "Frank",
+        email: "frank@example.com",
+        role: "mentor",
+      },
+      {
+        ...member,
+        member_id: 3,
+        first_name: "Anna",
+        email: "anna@example.com",
+        role: null,
+      },
+    ]),
+  );
+  renderPage(false, "/database?page=1");
+  const user = userEvent.setup();
+  await screen.findByText("sofia@example.com");
+  await user.click(screen.getByRole("button", { name: "Filters" }));
+  await user.click(screen.getByRole("checkbox", { name: "Mentor" }));
+  expect(screen.getByText("frank@example.com")).toBeInTheDocument();
+  expect(screen.queryByText("sofia@example.com")).not.toBeInTheDocument();
+  expect(screen.queryByText("anna@example.com")).not.toBeInTheDocument();
+  expect(screen.getByText("1 matching member")).toBeInTheDocument();
+  expect(screen.getByText("3 members")).toBeInTheDocument();
+  expect(screen.getByLabelText("Current URL")).toHaveTextContent("role=mentor");
+  expect(screen.getByLabelText("Current URL")).toHaveTextContent("page=1");
+  await user.click(screen.getByRole("checkbox", { name: "Mentee" }));
+  expect(screen.getByText("sofia@example.com")).toBeInTheDocument();
+  expect(screen.getByText("frank@example.com")).toBeInTheDocument();
+  expect(screen.getByText("2 matching members")).toBeInTheDocument();
+  await user.click(screen.getByRole("checkbox", { name: "Mentor" }));
+  await user.click(screen.getByRole("checkbox", { name: "Mentee" }));
+  expect(screen.getByText("anna@example.com")).toBeInTheDocument();
+  expect(screen.queryByText("1 matching member")).not.toBeInTheDocument();
+});
+
+it.each(["/database?page=2", "/database?page=2&search=Ada&role=mentor"])(
+  "shows a created member through refresh from %s",
+  async (entry) => {
+    const members = Array.from({ length: 11 }, (_, i) => ({
+      ...member,
+      member_id: i + 1,
+      email: `old${i}@example.com`,
+      first_name: "Ada",
+      role: "mentor" as const,
+    }));
+    const pending = deferred<ReturnType<typeof memberList>>();
+    vi.mocked(list)
+      .mockResolvedValueOnce(memberList(members))
+      .mockReturnValue(pending.promise);
+    const created = {
+      ...member,
+      member_id: 12,
+      email: "new@example.com",
+      first_name: "Zoe",
+      role: "mentee" as const,
+    };
+    vi.mocked(create).mockResolvedValue({ ...savedMember(), data: created });
+    renderPage(false, entry);
+    await screen.findByText("old10@example.com");
+    const user = await openForm();
+    await fillForm(user);
+    submitForm();
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(await screen.findByText("new@example.com")).toBeInTheDocument();
+    await act(async () => {
+      pending.resolve(memberList([...members, created]));
+    });
+    await waitFor(() =>
+      expect(screen.getByLabelText("Current URL")).toHaveTextContent("?page=2"),
+    );
+    expect(screen.getByText("new@example.com")).toBeInTheDocument();
+  },
+);
+
+it.each([false, true])(
+  "respects history after creation when refresh has failed: %s",
+  async (failBeforeBack) => {
+    const members = Array.from({ length: 21 }, (_, i) => ({
+      ...member,
+      member_id: i + 1,
+      email: `history${i}@example.com`,
+    }));
+    const pending = deferred<ReturnType<typeof memberList>>();
+    vi.mocked(list)
+      .mockResolvedValueOnce(memberList(members))
+      .mockReturnValue(pending.promise);
+    const created = { ...member, member_id: 22, email: "created@example.com" };
+    vi.mocked(create).mockResolvedValue({ ...savedMember(), data: created });
+    renderPage(false, "/database?page=2");
+    await screen.findByText("history10@example.com");
+    await userEvent.click(screen.getByRole("button", { name: "3" }));
+    const user = await openForm();
+    await fillForm(user);
+    submitForm();
+    await screen.findByText("created@example.com");
+    const failRefresh = async () => {
+      await act(async () => {
+        pending.reject(new Error("Refresh failed"));
+      });
+      await screen.findByText("Unable to refresh members");
+    };
+    if (failBeforeBack) await failRefresh();
+    await user.click(screen.getByRole("button", { name: "History back" }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Current URL")).toHaveTextContent("?page=2"),
+    );
+    expect(
+      await screen.findByText("history10@example.com"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("created@example.com")).not.toBeInTheDocument();
+    if (!failBeforeBack) await failRefresh();
+    expect(screen.getByText("history10@example.com")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "History forward" }));
+    expect(await screen.findByText("created@example.com")).toBeInTheDocument();
+    expect(screen.getByLabelText("Current URL")).toHaveTextContent("?page=1");
+  },
+);

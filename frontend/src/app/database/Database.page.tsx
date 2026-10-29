@@ -4,8 +4,11 @@ import {
   Button,
   Group,
   Pagination,
+  Skeleton,
+  Stack,
   Table,
   Text,
+  TextInput,
   Title,
 } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
@@ -16,11 +19,31 @@ import type { Member } from "@/lib/api/generated/types.gen";
 import AddMembersModal from "@/app/database/_components/AddMembersModal";
 import ArchiveMemberModal from "@/app/database/_components/ArchiveMemberModal";
 import EditMemberModal from "@/app/database/_components/EditMemberModal";
-import { useMembersQuery } from "@/lib/api/queries/members";
+import {
+  membersPerPage,
+  useMemberTable,
+} from "@/app/database/_components/hook";
+import MembersTableSkeleton from "@/app/database/_components/MembersTableSkeleton";
+import MemberTableRow from "@/app/database/_components/MemberTableRow";
+import RoleFilter from "@/app/database/_components/RoleFilter";
 
 export default function DatabasePage() {
   const [opened, { open, close }] = useDisclosure(false);
-  const members = useMembersQuery();
+  const {
+    members,
+    search,
+    setSearch,
+    roles,
+    setRoles,
+    setPage,
+    currentPage,
+    pageCount,
+    visibleMembers,
+    matchingCount,
+    hasSearch,
+    showCreatedMember,
+  } = useMemberTable();
+  const [expandedId, setExpandedId] = useState<number | null>(null);
   const [editing, setEditing] = useState<Member | null>(null);
   const [archiving, setArchiving] = useState<Member | null>(null);
   return (
@@ -28,17 +51,69 @@ export default function DatabasePage() {
       <Group justify="space-between" mb="md">
         <Box>
           <Title order={2}>Database</Title>
-          <Text c="dimmed">
-            {members.data?.total != null ?
-              `${members.data.total} ${members.data.total === 1 ? "member" : "members"}`
-            : "— members"}
-          </Text>
+          <Skeleton
+            visible={members.isPending}
+            width={members.isPending ? 110 : "auto"}
+          >
+            <Text c="dimmed">
+              {members.data?.total != null ?
+                `${members.data.total} ${members.data.total === 1 ? "member" : "members"}`
+              : "— members"}
+            </Text>
+          </Skeleton>
         </Box>
-        <Button type="button" onClick={open}>
-          Add
-        </Button>
+        <Stack gap="xs">
+          <Button type="button" onClick={open}>
+            Add
+          </Button>
+          <RoleFilter
+            roles={roles}
+            onChange={(value) => {
+              setRoles(value);
+              setExpandedId(null);
+            }}
+          />
+        </Stack>
       </Group>
-      <AddMembersModal opened={opened} onClose={close} />
+      <TextInput
+        label="Search by first name"
+        placeholder="First name"
+        type="search"
+        size="sm"
+        maw={280}
+        value={search}
+        onChange={(event) => {
+          setSearch(event.currentTarget.value);
+          setExpandedId(null);
+        }}
+        mb="md"
+        rightSectionWidth={search ? 70 : undefined}
+        rightSection={
+          search ?
+            <Button
+              variant="subtle"
+              size="compact-xs"
+              onClick={() => {
+                setSearch("");
+                setExpandedId(null);
+              }}
+            >
+              Clear
+            </Button>
+          : undefined
+        }
+      />
+      {(hasSearch || roles.length > 0) && members.data && (
+        <Text size="sm" c="dimmed" mb="sm" role="status">
+          {matchingCount}{" "}
+          {matchingCount === 1 ? "matching member" : "matching members"}
+        </Text>
+      )}
+      <AddMembersModal
+        opened={opened}
+        onClose={close}
+        onCreated={showCreatedMember}
+      />
       {editing && (
         <EditMemberModal
           key={editing.member_id}
@@ -84,7 +159,7 @@ export default function DatabasePage() {
           Refreshing members…
         </Text>
       )}
-      <Box mah="70vh" style={{ overflow: "auto" }}>
+      <Table.ScrollContainer minWidth={900} type="native">
         <Table striped withRowBorders={false} verticalSpacing="md">
           <Table.Thead>
             <Table.Tr>
@@ -92,56 +167,40 @@ export default function DatabasePage() {
               <Table.Th>Email</Table.Th>
               <Table.Th>First name</Table.Th>
               <Table.Th>Last name</Table.Th>
-              <Table.Th>Joined at</Table.Th>
               <Table.Th>Discord</Table.Th>
+              <Table.Th>Role</Table.Th>
+              <Table.Th>Additional info</Table.Th>
               <Table.Th>Actions</Table.Th>
             </Table.Tr>
           </Table.Thead>
-          <Table.Tbody>
-            {members.data?.members.map((member) => (
-              <Table.Tr key={member.member_id}>
-                <Table.Td>{member.member_id}</Table.Td>
-                <Table.Td>{member.email}</Table.Td>
-                <Table.Td>{member.first_name}</Table.Td>
-                <Table.Td>{member.last_name}</Table.Td>
-                <Table.Td>
-                  {member.joined_at ?
-                    new Date(member.joined_at).toLocaleString()
-                  : "—"}
-                </Table.Td>
-                <Table.Td>
-                  {member.discord_username ?? member.discord_id ?? "—"}
-                </Table.Td>
-                <Table.Td>
-                  <Button
-                    variant="light"
-                    size="xs"
-                    aria-label={`Edit member ${member.member_id}`}
-                    onClick={() => setEditing(member)}
-                  >
-                    Edit
-                  </Button>
-                  <Button
-                    variant="light"
-                    color="red"
-                    size="xs"
-                    ml="xs"
-                    aria-label={`Archive member ${member.member_id}`}
-                    onClick={() => setArchiving(member)}
-                  >
-                    Archive
-                  </Button>
-                </Table.Td>
-              </Table.Tr>
+          <Table.Tbody aria-busy={members.isPending}>
+            {members.isPending && (
+              <MembersTableSkeleton rows={membersPerPage} />
+            )}
+            {visibleMembers.map((member) => (
+              <MemberTableRow
+                key={member.member_id}
+                member={member}
+                expanded={expandedId === member.member_id}
+                onToggle={() =>
+                  setExpandedId((current) =>
+                    current === member.member_id ? null : member.member_id,
+                  )
+                }
+                onEdit={setEditing}
+                onArchive={setArchiving}
+              />
             ))}
-            {(!members.data || members.data.members.length === 0) && (
+            {!members.isPending && matchingCount === 0 && (
               <Table.Tr>
-                <Table.Td colSpan={7}>
+                <Table.Td colSpan={8}>
                   <Text fw={500} ta="center">
-                    {members.isPending ?
-                      "Loading members…"
-                    : members.isError ?
+                    {members.isError ?
                       "Member list unavailable"
+                    : hasSearch ?
+                      "No members match your search"
+                    : roles.length > 0 ?
+                      "No members match these filters"
                     : "Members will appear here"}
                   </Text>
                 </Table.Td>
@@ -149,9 +208,23 @@ export default function DatabasePage() {
             )}
           </Table.Tbody>
         </Table>
-      </Box>
+      </Table.ScrollContainer>
       <Group justify="center" mt="md">
-        <Pagination total={1} value={1} disabled />
+        <Skeleton
+          visible={members.isPending}
+          height={members.isPending ? 32 : undefined}
+          width={members.isPending ? 180 : "auto"}
+        >
+          <Pagination
+            total={pageCount}
+            value={currentPage}
+            onChange={(value) => {
+              setPage(value);
+              setExpandedId(null);
+            }}
+            disabled={members.isPending || pageCount === 1}
+          />
+        </Skeleton>
       </Group>
     </>
   );
