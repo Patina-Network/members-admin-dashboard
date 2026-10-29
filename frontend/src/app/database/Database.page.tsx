@@ -116,7 +116,6 @@ export default function DatabasePage() {
                   <Button
                     variant="light"
                     size="xs"
-                    aria-label={`Edit member ${member.member_id}`}
                     onClick={() => setEditing(member)}
                   >
                     Edit
@@ -126,10 +125,9 @@ export default function DatabasePage() {
                     color="red"
                     size="xs"
                     ml="xs"
-                    aria-label={`Delete member ${member.member_id}`}
                     onClick={() => setArchiving(member)}
                   >
-                    Delete
+                    Archive
                   </Button>
                 </Table.Td>
               </Table.Tr>

@@ -58,7 +58,6 @@ export default function Header() {
               opened={drawerOpened}
               onClick={toggleDrawer}
               hiddenFrom="sm"
-              aria-label="Menu button"
             />
           </>
         )}
