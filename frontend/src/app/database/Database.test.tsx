@@ -12,14 +12,23 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import DatabasePage from "@/app/database/Database.page";
-import { create, currentSession, list } from "@/lib/api/generated/sdk.gen";
+import {
+  create,
+  currentSession,
+  details,
+  list,
+  update,
+} from "@/lib/api/generated/sdk.gen";
 
 vi.mock("@/lib/api/generated/sdk.gen", () => ({
   create: vi.fn(),
   currentSession: vi.fn(),
+  details: vi.fn(),
+  update: vi.fn(),
   list: vi.fn(),
 }));
 const member = {
+  updated_at: "2020-01-01T00:00:00Z",
   member_id: 1,
   email: "person@example.com",
   first_name: "First",
@@ -87,6 +96,18 @@ const memberList = (members: (typeof member)[]) => ({
 });
 
 beforeEach(() => {
+  vi.mocked(details).mockResolvedValue({
+    ...savedMember(),
+    data: {
+      ...member,
+      linkedin_username: "alex",
+      instagram_username: null,
+      career: "Engineer",
+      industry: "Technology",
+      profile: "Existing notes",
+      role: "mentor",
+    },
+  });
   vi.mocked(currentSession).mockResolvedValue({
     data: {
       user: { id: "admin", name: "Admin", isAdmin: true },
@@ -360,6 +381,351 @@ describe("add member", () => {
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
     expect(create).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("edit member", () => {
+  it.each([
+    { discord_id: "123", discord_username: null },
+    { discord_id: null, discord_username: "existing" },
+  ])(
+    "allows name edits with untouched incomplete Discord data: %j",
+    async (discord) => {
+      vi.mocked(list).mockResolvedValue(memberList([member]));
+      vi.mocked(details).mockResolvedValueOnce({
+        ...savedMember(),
+        data: {
+          ...member,
+          ...discord,
+          linkedin_username: null,
+          instagram_username: null,
+          career: null,
+          industry: null,
+          profile: null,
+          role: "mentor",
+        },
+      });
+      vi.mocked(update).mockResolvedValue(savedMember());
+      renderPage();
+      const user = userEvent.setup();
+      await user.click(
+        await screen.findByRole("button", { name: "Edit member 1" }),
+      );
+      await user.clear(await screen.findByLabelText(/^First Name/));
+      await user.type(screen.getByLabelText(/^First Name/), "Changed");
+      submitForm();
+      await waitFor(() =>
+        expect(update).toHaveBeenCalledWith({
+          headers: { "X-CSRF-Token": "test-csrf" },
+          path: { member_id: 1 },
+          body: {
+            expected_updated_at: member.updated_at,
+            first_name: "Changed",
+          },
+        }),
+      );
+    },
+  );
+
+  it("keeps a stale form open with conflict feedback", async () => {
+    vi.mocked(list).mockResolvedValue(memberList([member]));
+    vi.mocked(update).mockResolvedValueOnce({
+      data: undefined,
+      error: {
+        error: "member changed since it was opened; reopen it before saving",
+      },
+      request: new Request("http://localhost/api/members/1"),
+      response: new Response(null, { status: 409 }),
+    });
+    renderPage();
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Edit member 1" }),
+    );
+    await user.clear(await screen.findByLabelText(/^First Name/));
+    await user.type(screen.getByLabelText(/^First Name/), "Keep this");
+    submitForm();
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Another admin changed this member",
+    );
+    expect(screen.getByLabelText(/^First Name/)).toHaveValue("Keep this");
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [401, "Your session expired"],
+    [403, "You do not have permission"],
+    [404, "This member could not be found"],
+  ])("explains member detail errors for HTTP %s", async (status, message) => {
+    vi.mocked(list).mockResolvedValue(memberList([member]));
+    vi.mocked(details).mockResolvedValueOnce({
+      data: undefined,
+      error: { error: "not found" },
+      request: new Request("http://localhost/api/members/1"),
+      response: new Response(null, { status }),
+    });
+    renderPage();
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Edit member 1" }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(message);
+    expect(
+      screen.queryByRole("button", { name: "Save changes" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("omits the joined timestamp when editing other fields", async () => {
+    vi.mocked(list).mockResolvedValue(memberList([member]));
+    const original = "2020-01-02T03:04:05.123456Z";
+    vi.mocked(details).mockResolvedValueOnce({
+      ...savedMember(),
+      data: {
+        ...member,
+        joined_at: original,
+        linkedin_username: null,
+        instagram_username: null,
+        career: null,
+        industry: null,
+        profile: null,
+        role: null,
+      },
+    });
+    vi.mocked(update).mockResolvedValue(savedMember());
+    renderPage();
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Edit member 1" }),
+    );
+    await screen.findByLabelText(/^Email/);
+    submitForm();
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: { expected_updated_at: member.updated_at },
+        }),
+      ),
+    );
+  });
+
+  it("keeps editing unavailable until full details load and allows retry", async () => {
+    vi.mocked(list).mockResolvedValue(memberList([member]));
+    vi.mocked(details).mockRejectedValueOnce(new Error("Offline"));
+    renderPage();
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Edit member 1" }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Unable to load member details",
+    );
+    expect(
+      screen.queryByRole("button", { name: "Save changes" }),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByLabelText("Profile notes")).toHaveValue(
+      "Existing notes",
+    );
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("saves cleared optional fields", async () => {
+    vi.mocked(list).mockResolvedValue(memberList([member]));
+    vi.mocked(update).mockResolvedValue(savedMember());
+    renderPage();
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Edit member 1" }),
+    );
+    await screen.findByLabelText(/^Email/);
+    await user.click(
+      screen.getByRole("button", { name: /Social & Professional/ }),
+    );
+    await user.clear(screen.getByLabelText("LinkedIn Username"));
+    await user.clear(screen.getByLabelText("Career"));
+    await user.clear(screen.getByLabelText("Profile notes"));
+    await user.selectOptions(screen.getByLabelText("Role"), "");
+    submitForm();
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: expect.objectContaining({
+            linkedin_username: null,
+            career: null,
+            profile: null,
+            role: null,
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("prefills, validates, saves, and refreshes the row", async () => {
+    vi.mocked(list).mockResolvedValue(memberList([member]));
+    const changed = { ...member, first_name: "Updated" };
+    vi.mocked(update).mockResolvedValue({ ...savedMember(), data: changed });
+    renderPage();
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Edit member 1" }),
+    );
+    await screen.findByLabelText(/^Email/);
+    expect(screen.getByLabelText(/^Email/)).toHaveValue(member.email);
+    expect(screen.getByLabelText(/^First Name/)).toHaveValue("First");
+    expect(screen.getByLabelText("Joined At")).toHaveAttribute("readonly");
+    expect(screen.getByLabelText("Profile notes")).toHaveValue(
+      "Existing notes",
+    );
+    await user.clear(screen.getByLabelText(/^First Name/));
+    submitForm();
+    expect(
+      await screen.findByText("First name is required"),
+    ).toBeInTheDocument();
+    expect(update).not.toHaveBeenCalled();
+    await user.type(screen.getByLabelText(/^First Name/), "Updated");
+    await user.click(
+      screen.getByRole("button", { name: /Social & Professional/ }),
+    );
+    expect(screen.getByLabelText("LinkedIn Username")).toHaveValue("alex");
+    await user.clear(screen.getByLabelText("Career"));
+    await user.type(screen.getByLabelText("Career"), "Designer");
+    await user.clear(screen.getByLabelText("Profile notes"));
+    await user.type(screen.getByLabelText("Profile notes"), "Updated notes");
+    await user.selectOptions(screen.getByLabelText("Role"), "board");
+    vi.mocked(list).mockResolvedValue(memberList([changed]));
+    submitForm();
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith({
+        headers: { "X-CSRF-Token": "test-csrf" },
+        path: { member_id: 1 },
+        body: {
+          expected_updated_at: member.updated_at,
+          first_name: "Updated",
+          career: "Designer",
+          profile: "Updated notes",
+          role: "board",
+        },
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText("Updated")).toBeInTheDocument();
+    expect(list).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears stale paired Discord errors when either value changes", async () => {
+    vi.mocked(list).mockResolvedValue(memberList([member]));
+    renderPage();
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Edit member 1" }),
+    );
+    await screen.findByLabelText(/^Email/);
+    await user.click(
+      screen.getByRole("button", { name: /Social & Professional/ }),
+    );
+    await user.type(screen.getByLabelText("Discord ID"), "123");
+    submitForm();
+    expect(
+      await screen.findByText("Discord username is required with an ID"),
+    ).toBeInTheDocument();
+    await user.clear(screen.getByLabelText("Discord ID"));
+    expect(
+      screen.queryByText("Discord username is required with an ID"),
+    ).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText("Discord Username"), "testuser");
+    submitForm();
+    expect(
+      await screen.findByText("Discord ID is required with a username"),
+    ).toBeInTheDocument();
+    await user.clear(screen.getByLabelText("Discord Username"));
+    expect(
+      screen.queryByText("Discord ID is required with a username"),
+    ).not.toBeInTheDocument();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("keeps the refreshed row when the subsequent list refresh fails", async () => {
+    vi.mocked(list)
+      .mockResolvedValueOnce(memberList([member]))
+      .mockRejectedValue(new Error("offline"));
+    vi.mocked(update).mockResolvedValue({
+      ...savedMember(),
+      data: { ...member, first_name: "Saved" },
+    });
+    renderPage();
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Edit member 1" }),
+    );
+    await screen.findByLabelText(/^Email/);
+    await user.clear(screen.getByLabelText(/^First Name/));
+    await user.type(screen.getByLabelText(/^First Name/), "Saved");
+    submitForm();
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText("Saved")).toBeInTheDocument();
+  });
+
+  it("does not retry uncertain updates and retains entered values", async () => {
+    vi.mocked(list).mockResolvedValue(memberList([member]));
+    vi.mocked(update).mockResolvedValue({
+      data: undefined,
+      error: { error: "upstream timeout" },
+      request: new Request("http://localhost/api/members/1"),
+      response: new Response(null, { status: 504 }),
+    });
+    renderPage(3);
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Edit member 1" }),
+    );
+    await screen.findByLabelText(/^Email/);
+    await user.clear(screen.getByLabelText(/^First Name/));
+    await user.type(screen.getByLabelText(/^First Name/), "Keep this");
+    submitForm();
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not confirm whether the member was updated",
+    );
+    expect(screen.getByLabelText(/^First Name/)).toHaveValue("Keep this");
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
+  });
+
+  it("preserves values on errors and blocks duplicate pending saves", async () => {
+    vi.mocked(list).mockResolvedValue(memberList([member]));
+    const pending = deferred<{
+      data: undefined;
+      error: { error: string };
+      request: Request;
+      response: Response;
+    }>();
+    vi.mocked(update).mockReturnValue(pending.promise);
+    renderPage(3);
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Edit member 1" }),
+    );
+    await screen.findByLabelText(/^Email/);
+    submitForm();
+    submitForm();
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    await act(async () =>
+      pending.resolve({
+        data: undefined,
+        request: new Request("http://localhost/api/members/1"),
+        response: new Response(null, { status: 409 }),
+        error: { error: "already exists" },
+      }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "already exists",
+    );
+    expect(screen.getByLabelText(/^Email/)).toHaveValue(member.email);
+    expect(update).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -227,3 +227,279 @@ fn openapi_describes_member_success_and_shared_error_bodies() {
         }
     }
 }
+
+#[tokio::test]
+async fn details_returns_full_record_with_admin_metadata() {
+    let response = super::details_with(42, Duration::from_secs(1), |request| async move {
+        assert_eq!(request.metadata().get("profile").unwrap(), "core_admin");
+        assert!(request.metadata().contains_key("grpc-timeout"));
+        assert!(matches!(
+            request.into_inner().identifier,
+            Some(members::get_member_request::Identifier::MemberId(42))
+        ));
+        let mut member = sensitive_member();
+        member.linkedin_username = Some("person-linkedin".into());
+        member.instagram_username = Some("person.photo".into());
+        member.updated_at = Some("2020-01-01T00:00:00Z".parse().unwrap());
+        member.career = Some("Engineer".into());
+        member.industry = Some("Technology".into());
+        member.role = Some(members::MemberRole::Mentor as i32);
+        Ok(GrpcResponse::new(
+            members::admin::GetSensitiveMemberResponse {
+                member: Some(member),
+            },
+        ))
+    })
+    .await
+    .into_response();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body["member_id"], 42);
+    assert_eq!(body["profile"], "private notes");
+    assert_eq!(body["linkedin_username"], "person-linkedin");
+    assert_eq!(body["instagram_username"], "person.photo");
+    assert_eq!(body["career"], "Engineer");
+    assert_eq!(body["industry"], "Technology");
+    assert_eq!(body["role"], "mentor");
+    assert_eq!(body["updated_at"], "2020-01-01T00:00:00Z");
+    assert!(body.get("archived_at").is_none());
+}
+
+#[tokio::test]
+async fn details_handles_invalid_ids_missing_records_and_upstream_errors() {
+    for id in [0, -1] {
+        let response = super::details_with(id, Duration::from_secs(1), |_| async {
+            panic!("invalid id must not reach gRPC")
+        })
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+    let response = super::details_with(42, Duration::from_secs(1), |_| async {
+        Ok(GrpcResponse::new(
+            members::admin::GetSensitiveMemberResponse { member: None },
+        ))
+    })
+    .await
+    .into_response();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    for (code, expected) in [
+        (Code::NotFound, StatusCode::NOT_FOUND),
+        (Code::PermissionDenied, StatusCode::FORBIDDEN),
+        (Code::Unavailable, StatusCode::SERVICE_UNAVAILABLE),
+    ] {
+        let response = super::details_with(42, Duration::from_secs(1), |_| async move {
+            Err(Status::new(code, "private upstream detail"))
+        })
+        .await
+        .into_response();
+        assert_eq!(response.status(), expected);
+        assert!(
+            !json_body(response)
+                .await
+                .to_string()
+                .contains("private upstream detail")
+        );
+    }
+    let response = super::details_with(42, Duration::from_millis(1), |_| std::future::pending())
+        .await
+        .into_response();
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+}
+
+#[tokio::test]
+async fn update_validates_all_fields_before_calling_upstream() {
+    for (field, value) in [
+        ("email", "bad"),
+        ("first_name", " "),
+        ("last_name", " "),
+        ("joined_at", "2020-01-01T00:00:00Z"),
+        ("joined_at", "2999-01-01T00:00:00Z"),
+        ("linkedin_username", "https://linkedin.com/in/person"),
+        ("instagram_username", "@person"),
+        ("role", "unknown"),
+        ("discord_id", "abc"),
+        ("discord_username", "person"),
+    ] {
+        let mut input = serde_json::json!({ "expected_updated_at": "2020-01-01T00:00:00Z", "email": "person@example.com", "first_name": "First", "last_name": "Last" });
+        input[field] = value.into();
+        let request = Request::builder()
+            .header("content-type", "application/json")
+            .body(Body::from(input.to_string()))
+            .unwrap();
+        let response = super::update_with(
+            42,
+            Json::from_request(request, &()).await,
+            Duration::from_secs(1),
+            |_| async { panic!("invalid input must not reach gRPC") },
+        )
+        .await
+        .into_response();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "{field}={value}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn update_preserves_omitted_fields_and_clears_explicit_nulls() {
+    for clear in [false, true] {
+        let mut input = serde_json::json!({ "expected_updated_at": "2020-01-01T00:00:00Z", "email": "person@example.com", "first_name": "First", "last_name": "Last" });
+        if clear {
+            for field in [
+                "discord_id",
+                "discord_username",
+                "linkedin_username",
+                "instagram_username",
+                "career",
+                "industry",
+                "profile",
+                "role",
+            ] {
+                input[field] = serde_json::Value::Null;
+            }
+        }
+        let body = serde_json::from_value(input).unwrap();
+        let response = super::update_with(
+            42,
+            Ok(Json(body)),
+            Duration::from_secs(1),
+            |request| async move {
+                assert_eq!(request.metadata().get("profile").unwrap(), "core_admin");
+                let input = request.into_inner();
+                let expected = clear.then_some("");
+                for field in [
+                    input.discord_id,
+                    input.discord_username,
+                    input.linkedin_username,
+                    input.instagram_username,
+                    input.career,
+                    input.industry,
+                    input.profile,
+                ] {
+                    assert_eq!(field.as_deref(), expected);
+                }
+                assert_eq!(
+                    input.role,
+                    clear.then_some(members::MemberRole::Unspecified as i32)
+                );
+                assert!(input.joined_at.is_none());
+                Ok(GrpcResponse::new(members::admin::UpdateMemberResponse {
+                    member: Some(sensitive_member()),
+                }))
+            },
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+}
+
+#[tokio::test]
+async fn checked_update_rejects_stale_versions_without_writing() {
+    let body = serde_json::from_value(serde_json::json!({
+        "expected_updated_at": "2020-01-01T00:00:00Z", "first_name": "Changed"
+    }))
+    .unwrap();
+    let response = super::checked_update_with(
+        42,
+        Ok(Json(body)),
+        Duration::from_secs(1),
+        |request| async move {
+            assert_eq!(request.metadata().get("profile").unwrap(), "core_admin");
+            let mut member = sensitive_member();
+            member.updated_at = Some("2020-01-02T00:00:00Z".parse().unwrap());
+            member.role = Some(members::MemberRole::Board as i32);
+            Ok(GrpcResponse::new(
+                members::admin::GetSensitiveMemberResponse {
+                    member: Some(member),
+                },
+            ))
+        },
+        |_| async { panic!("stale forms must not write") },
+    )
+    .await
+    .into_response();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert!(
+        json_body(response).await["error"]
+            .as_str()
+            .unwrap()
+            .contains("member changed")
+    );
+}
+
+#[tokio::test]
+async fn checked_update_allows_unrelated_edits_to_incomplete_discord_records() {
+    let body = serde_json::from_value(serde_json::json!({
+        "expected_updated_at": "2020-01-01T00:00:00Z", "first_name": "Changed"
+    }))
+    .unwrap();
+    let response = super::checked_update_with(
+        42,
+        Ok(Json(body)),
+        Duration::from_secs(1),
+        |_| async {
+            let mut member = sensitive_member();
+            member.updated_at = Some("2020-01-01T00:00:00Z".parse().unwrap());
+            member.discord_username = None;
+            Ok(GrpcResponse::new(
+                members::admin::GetSensitiveMemberResponse {
+                    member: Some(member),
+                },
+            ))
+        },
+        |request| async move {
+            let input = request.into_inner();
+            assert_eq!(input.first_name.as_deref(), Some("Changed"));
+            assert!(input.email.is_none());
+            assert!(input.last_name.is_none());
+            assert!(input.discord_id.is_none());
+            assert!(input.discord_username.is_none());
+            assert!(input.role.is_none());
+            assert!(input.joined_at.is_none());
+            Ok(GrpcResponse::new(members::admin::UpdateMemberResponse {
+                member: Some(sensitive_member()),
+            }))
+        },
+    )
+    .await
+    .into_response();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn checked_update_requires_version_and_stops_when_read_fails() {
+    for input in [
+        serde_json::json!({ "first_name": "Changed" }),
+        serde_json::json!({ "expected_updated_at": "", "first_name": "Changed" }),
+    ] {
+        let request = Request::builder()
+            .header("content-type", "application/json")
+            .body(Body::from(input.to_string()))
+            .unwrap();
+        let response = super::checked_update_with(
+            42,
+            Json::from_request(request, &()).await,
+            Duration::from_secs(1),
+            |_| async { panic!("missing version must not read") },
+            |_| async { panic!("missing version must not write") },
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+    let body = serde_json::from_value(serde_json::json!({ "expected_updated_at": "2020-01-01T00:00:00Z", "first_name": "Changed" })).unwrap();
+    let response = super::checked_update_with(
+        42,
+        Ok(Json(body)),
+        Duration::from_secs(1),
+        |_| async { Err(Status::unavailable("private details")) },
+        |_| async { panic!("failed reads must not write") },
+    )
+    .await
+    .into_response();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}

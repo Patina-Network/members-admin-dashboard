@@ -1,9 +1,23 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import type { MemberList, NewMember } from "@/lib/api/generated/types.gen";
+import type {
+  Member,
+  MemberList,
+  MemberUpdate,
+  NewMember,
+} from "@/lib/api/generated/types.gen";
 
-import { listQueryKey } from "@/lib/api/generated/@tanstack/react-query.gen";
-import { create, currentSession, list } from "@/lib/api/generated/sdk.gen";
+import {
+  detailsQueryKey,
+  listQueryKey,
+} from "@/lib/api/generated/@tanstack/react-query.gen";
+import {
+  create,
+  currentSession,
+  details,
+  list,
+  update,
+} from "@/lib/api/generated/sdk.gen";
 
 const membersKey = listQueryKey();
 const uncertainWriteMessage =
@@ -16,6 +30,35 @@ export const useMembersQuery = () => {
     queryFn: ({ signal }) => fetchMembers(signal),
   });
 };
+
+export const useMemberDetailsQuery = (memberId: number) => {
+  return useQuery({
+    queryKey: detailsQueryKey({ path: { member_id: memberId } }),
+    gcTime: 0,
+    retry: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    queryFn: ({ signal }) => fetchMemberDetails(memberId, signal),
+  });
+};
+
+async function fetchMemberDetails(memberId: number, signal: AbortSignal) {
+  const result = await details({ path: { member_id: memberId }, signal }).catch(
+    () => {
+      throw new Error("Unable to load member details. Please try again.");
+    },
+  );
+  if (!result.data) {
+    const status = result.response?.status;
+    throw new Error(
+      status === 401 ? "Your session expired. Please sign in again."
+      : status === 403 ? "You do not have permission to view this member."
+      : status === 404 ? "This member could not be found."
+      : "Unable to load member details. Please try again.",
+    );
+  }
+  return result.data;
+}
 
 export const useAddMemberMutation = () => {
   const queryClient = useQueryClient();
@@ -37,19 +80,24 @@ async function fetchMembers(signal: AbortSignal) {
   return result.data;
 }
 
-async function createMember(body: NewMember) {
+async function getAdminCsrfToken(action: "adding" | "updating") {
   const { data: session } = await currentSession();
   if (!session) {
     throw new Error("Unable to check your session. Please try again.");
   }
   if (!session.user?.isAdmin || !session.csrfToken) {
     throw new Error(
-      "Please sign in with an admin account before adding members.",
+      `Please sign in with an admin account before ${action} members.`,
     );
   }
+  return session.csrfToken;
+}
+
+async function createMember(body: NewMember) {
+  const csrfToken = await getAdminCsrfToken("adding");
   const result = await create({
     body,
-    headers: { "X-CSRF-Token": session.csrfToken },
+    headers: { "X-CSRF-Token": csrfToken },
   }).catch(() => {
     throw new Error(uncertainWriteMessage);
   });
@@ -65,3 +113,57 @@ async function createMember(body: NewMember) {
   }
   return result.data;
 }
+
+export const useUpdateMemberMutation = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    retry: false,
+    mutationFn: async ({
+      memberId,
+      body,
+    }: {
+      memberId: number;
+      body: MemberUpdate;
+    }) => {
+      const csrfToken = await getAdminCsrfToken("updating");
+      const result = await update({
+        headers: { "X-CSRF-Token": csrfToken },
+        path: { member_id: memberId },
+        body,
+      }).catch(() => {
+        throw new Error(
+          "Could not confirm whether the member was updated. Reload before trying again.",
+        );
+      });
+      if (!result.data) {
+        throw new Error(
+          !result.response || result.response.status >= 500 ?
+            "Could not confirm whether the member was updated. Reload before trying again."
+          : (
+            result.response.status === 409 &&
+            result.error?.error?.includes("member changed")
+          ) ?
+            "Another admin changed this member. Close and reopen the form to review their changes before saving."
+          : result.response.status === 409 ?
+            "A member with this email or social account already exists."
+          : (result.error?.error ?? "Unable to update member."),
+        );
+      }
+      return result.data;
+    },
+    onSuccess: async (member: Member) => {
+      await queryClient.cancelQueries({ queryKey: membersKey });
+      queryClient.setQueryData<MemberList>(membersKey, (current) =>
+        current ?
+          {
+            ...current,
+            members: current.members.map((row) =>
+              row.member_id === member.member_id ? member : row,
+            ),
+          }
+        : current,
+      );
+      void queryClient.invalidateQueries({ queryKey: membersKey });
+    },
+  });
+};

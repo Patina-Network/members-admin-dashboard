@@ -6,7 +6,7 @@ use std::{
 
 use axum::{
     Json,
-    extract::{State, rejection::JsonRejection},
+    extract::{Path, State, rejection::JsonRejection},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
@@ -14,14 +14,14 @@ use members_grpc_service::members::{
     self,
     admin::{CreateMemberRequest, CreateMemberResponse, SensitiveMember},
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{
     grpc::{self, error::UpstreamError},
     http::state::AppState,
 };
 
-#[derive(Clone, Copy, Deserialize, utoipa::ToSchema)]
+#[derive(Clone, Copy, Deserialize, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MemberRole {
     Board,
@@ -85,8 +85,233 @@ impl TryFrom<NewMember> for CreateMemberRequest {
     }
 }
 
+fn validate_update_fields(
+    input: &members::admin::UpdateMemberRequest,
+) -> Result<(), UpstreamError> {
+    if input.email.as_ref().is_some_and(|email| {
+        email.chars().any(char::is_whitespace)
+            || email.matches('@').count() != 1
+            || !email.split_once('@').is_some_and(|(local, domain)| {
+                !local.is_empty()
+                    && domain.contains('.')
+                    && !domain.starts_with('.')
+                    && !domain.ends_with('.')
+            })
+    }) || input.first_name.as_ref().is_some_and(String::is_empty)
+        || input.last_name.as_ref().is_some_and(String::is_empty)
+    {
+        return Err(UpstreamError::InvalidArgument);
+    }
+    if input.discord_id.is_some() != input.discord_username.is_some() {
+        return Err(UpstreamError::InvalidArgument);
+    }
+    if let (Some(id), Some(username)) = (&input.discord_id, &input.discord_username)
+        && (id.is_empty() != username.is_empty()
+            || (!id.is_empty()
+                && (!id.bytes().all(|byte| byte.is_ascii_digit())
+                    || id.parse::<u64>().map_or(true, |id| id == 0))))
+    {
+        return Err(UpstreamError::InvalidArgument);
+    }
+    for value in [&input.linkedin_username, &input.instagram_username]
+        .into_iter()
+        .flatten()
+    {
+        if value
+            .chars()
+            .any(|c| c.is_whitespace() || matches!(c, '/' | '@' | '?' | '#'))
+        {
+            return Err(UpstreamError::InvalidArgument);
+        }
+    }
+    Ok(())
+}
+
+// Omitted fields preserve stored values; explicit null clears optional fields.
+fn deserialize_update<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+fn update_string(value: Option<Option<String>>) -> Option<String> {
+    value.map(|value| optional(value).unwrap_or_default())
+}
+
 fn optional(value: Option<String>) -> Option<String> {
     value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty())
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+/// Optional fields omitted from an update are preserved. Explicit null or an empty string
+/// clears optional text fields; null clears role. Joined dates cannot be updated.
+pub struct MemberUpdate {
+    expected_updated_at: String,
+    email: Option<String>,
+    first_name: Option<String>,
+    last_name: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_update")]
+    discord_id: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_update")]
+    discord_username: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_update")]
+    linkedin_username: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_update")]
+    instagram_username: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_update")]
+    career: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_update")]
+    industry: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_update")]
+    profile: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_update")]
+    role: Option<Option<MemberRole>>,
+}
+
+impl MemberUpdate {
+    fn into_request(
+        self,
+        member_id: i32,
+    ) -> Result<members::admin::UpdateMemberRequest, UpstreamError> {
+        if member_id <= 0 {
+            return Err(UpstreamError::InvalidArgument);
+        }
+        if self.expected_updated_at.is_empty() {
+            return Err(UpstreamError::InvalidArgument);
+        }
+        let request = members::admin::UpdateMemberRequest {
+            member_id,
+            email: self.email.map(|v| v.trim().to_owned()),
+            first_name: self.first_name.map(|v| v.trim().to_owned()),
+            last_name: self.last_name.map(|v| v.trim().to_owned()),
+            joined_at: None,
+            discord_id: update_string(self.discord_id),
+            discord_username: update_string(self.discord_username),
+            linkedin_username: update_string(self.linkedin_username),
+            instagram_username: update_string(self.instagram_username),
+            career: update_string(self.career),
+            industry: update_string(self.industry),
+            profile: update_string(self.profile),
+            role: self.role.map(|role| {
+                role.map(Into::into)
+                    .unwrap_or(members::MemberRole::Unspecified as i32)
+            }),
+        };
+        validate_update_fields(&request)?;
+        Ok(request)
+    }
+}
+
+#[derive(utoipa::IntoResponses)]
+pub enum UpdateResponse {
+    #[response(status = 200, description = "Member updated")]
+    Success(Member),
+}
+
+impl IntoResponse for UpdateResponse {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Success(member) => Json(member).into_response(),
+        }
+    }
+}
+
+#[utoipa::path(put, path = "/api/members/{member_id}", params(("member_id" = i32, Path)), request_body = MemberUpdate, responses(UpdateResponse, UpstreamError))]
+pub async fn update(
+    State(state): State<AppState>,
+    Path(member_id): Path<i32>,
+    body: Result<Json<MemberUpdate>, JsonRejection>,
+) -> Result<UpdateResponse, UpstreamError> {
+    let mut client = state.client.clone();
+    let mut reader = state.client.clone();
+    checked_update_with(
+        member_id,
+        body,
+        state.config.members_admin_service_grpc_timeout,
+        |request| async move { reader.get_sensitive_member(request).await },
+        |request| async move { client.update_member(request).await },
+    )
+    .await
+}
+
+// This preflight detects stale forms. Atomic compare-and-update requires upstream RPC support.
+async fn checked_update_with<R, RFut, W, WFut>(
+    member_id: i32,
+    body: Result<Json<MemberUpdate>, JsonRejection>,
+    timeout: Duration,
+    read: R,
+    write: W,
+) -> Result<UpdateResponse, UpstreamError>
+where
+    R: FnOnce(tonic::Request<members::GetMemberRequest>) -> RFut,
+    RFut: Future<
+        Output = Result<tonic::Response<members::admin::GetSensitiveMemberResponse>, tonic::Status>,
+    >,
+    W: FnOnce(tonic::Request<members::admin::UpdateMemberRequest>) -> WFut,
+    WFut: Future<
+        Output = Result<tonic::Response<members::admin::UpdateMemberResponse>, tonic::Status>,
+    >,
+{
+    let Json(body) = body.map_err(|_| UpstreamError::InvalidArgument)?;
+    let expected = body.expected_updated_at.clone();
+    let request = body.into_request(member_id)?;
+    let current = grpc::call_admin(
+        timeout,
+        members::GetMemberRequest {
+            identifier: Some(members::get_member_request::Identifier::MemberId(member_id)),
+        },
+        read,
+    )
+    .await?
+    .member
+    .ok_or(UpstreamError::Failed)?;
+    if current
+        .updated_at
+        .as_ref()
+        .map(ToString::to_string)
+        .as_deref()
+        != Some(expected.as_str())
+    {
+        return Err(UpstreamError::Conflict);
+    }
+    send_update(request, timeout, write).await
+}
+
+#[cfg(test)]
+async fn update_with<F, Fut>(
+    member_id: i32,
+    body: Result<Json<MemberUpdate>, JsonRejection>,
+    timeout: Duration,
+    rpc: F,
+) -> Result<UpdateResponse, UpstreamError>
+where
+    F: FnOnce(tonic::Request<members::admin::UpdateMemberRequest>) -> Fut,
+    Fut: Future<
+        Output = Result<tonic::Response<members::admin::UpdateMemberResponse>, tonic::Status>,
+    >,
+{
+    let Json(body) = body.map_err(|_| UpstreamError::InvalidArgument)?;
+    send_update(body.into_request(member_id)?, timeout, rpc).await
+}
+
+async fn send_update<F, Fut>(
+    request: members::admin::UpdateMemberRequest,
+    timeout: Duration,
+    rpc: F,
+) -> Result<UpdateResponse, UpstreamError>
+where
+    F: FnOnce(tonic::Request<members::admin::UpdateMemberRequest>) -> Fut,
+    Fut: Future<
+        Output = Result<tonic::Response<members::admin::UpdateMemberResponse>, tonic::Status>,
+    >,
+{
+    let response = grpc::call_admin(timeout, request, rpc).await?;
+    Ok(UpdateResponse::Success(
+        response.member.ok_or(UpstreamError::Failed)?.into(),
+    ))
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -124,6 +349,99 @@ impl From<SensitiveMember> for Member {
             joined_at: value.joined_at.map(|v| v.to_string()),
             discord_id: value.discord_id,
             discord_username: value.discord_username,
+        }
+    }
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct MemberDetails {
+    updated_at: String,
+    #[serde(flatten)]
+    member: Member,
+    linkedin_username: Option<String>,
+    instagram_username: Option<String>,
+    career: Option<String>,
+    industry: Option<String>,
+    profile: Option<String>,
+    role: Option<MemberRole>,
+}
+
+#[derive(utoipa::IntoResponses)]
+pub enum DetailsResponse {
+    #[response(status = 200, description = "Full member details for editing")]
+    Success(MemberDetails),
+}
+
+impl IntoResponse for DetailsResponse {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Success(member) => Json(member).into_response(),
+        }
+    }
+}
+
+#[utoipa::path(get, path = "/api/members/{member_id}", params(("member_id" = i32, Path)), responses(DetailsResponse, UpstreamError))]
+pub async fn details(
+    State(state): State<AppState>,
+    Path(member_id): Path<i32>,
+) -> Result<DetailsResponse, UpstreamError> {
+    let mut client = state.client.clone();
+    details_with(
+        member_id,
+        state.config.members_admin_service_grpc_timeout,
+        |request| async move { client.get_sensitive_member(request).await },
+    )
+    .await
+}
+
+async fn details_with<F, Fut>(
+    member_id: i32,
+    timeout: Duration,
+    rpc: F,
+) -> Result<DetailsResponse, UpstreamError>
+where
+    F: FnOnce(tonic::Request<members::GetMemberRequest>) -> Fut,
+    Fut: Future<
+        Output = Result<tonic::Response<members::admin::GetSensitiveMemberResponse>, tonic::Status>,
+    >,
+{
+    if member_id <= 0 {
+        return Err(UpstreamError::InvalidArgument);
+    }
+    let result = grpc::call_admin(
+        timeout,
+        members::GetMemberRequest {
+            identifier: Some(members::get_member_request::Identifier::MemberId(member_id)),
+        },
+        rpc,
+    )
+    .await?;
+    let value = result.member.ok_or(UpstreamError::Failed)?;
+    Ok(DetailsResponse::Success(MemberDetails::from(value)))
+}
+
+impl From<SensitiveMember> for MemberDetails {
+    fn from(value: SensitiveMember) -> Self {
+        Self {
+            updated_at: value
+                .updated_at
+                .map(|date| date.to_string())
+                .unwrap_or_default(),
+            linkedin_username: value.linkedin_username.clone(),
+            instagram_username: value.instagram_username.clone(),
+            career: value.career.clone(),
+            industry: value.industry.clone(),
+            profile: value.profile.clone(),
+            role: match value
+                .role
+                .and_then(|role| members::MemberRole::try_from(role).ok())
+            {
+                Some(members::MemberRole::Board) => Some(MemberRole::Board),
+                Some(members::MemberRole::Mentor) => Some(MemberRole::Mentor),
+                Some(members::MemberRole::Mentee) => Some(MemberRole::Mentee),
+                _ => None,
+            },
+            member: value.into(),
         }
     }
 }
@@ -264,6 +582,174 @@ mod tests {
             industry: None,
             profile: None,
             role: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn update_forwards_admin_metadata_and_propagates_errors() {
+        for reply in [0, 1, 2] {
+            let body = super::MemberUpdate {
+                expected_updated_at: "2020-01-01T00:00:00Z".into(),
+                email: Some("person@example.com".into()),
+                first_name: Some("First".into()),
+                last_name: Some("Last".into()),
+                discord_id: None,
+                discord_username: None,
+                linkedin_username: None,
+                instagram_username: None,
+                career: None,
+                industry: None,
+                profile: None,
+                role: None,
+            };
+            let result = super::update_with(
+                42,
+                Ok(axum::Json(body)),
+                Duration::from_secs(1),
+                |request| async move {
+                    assert_eq!(request.metadata().get("profile").unwrap(), "core_admin");
+                    assert!(request.metadata().contains_key("grpc-timeout"));
+                    assert_eq!(request.into_inner().member_id, 42);
+                    if reply == 2 {
+                        return Err(tonic::Status::already_exists("private"));
+                    }
+                    Ok(tonic::Response::new(members::admin::UpdateMemberResponse {
+                        member: (reply == 0).then(|| SensitiveMember {
+                            member_id: 42,
+                            ..Default::default()
+                        }),
+                    }))
+                },
+            )
+            .await;
+            match reply {
+                0 => {
+                    let super::UpdateResponse::Success(member) = result.unwrap();
+                    assert_eq!(member.member_id, 42);
+                }
+                1 => assert!(matches!(result, Err(UpstreamError::Failed))),
+                _ => assert!(result.is_err()),
+            }
+        }
+    }
+
+    #[test]
+    fn update_forwards_all_form_fields() {
+        let input: super::MemberUpdate = serde_json::from_value(serde_json::json!({
+            "expected_updated_at": "2020-01-01T00:00:00Z", "email": "person@example.com", "first_name": "First", "last_name": "Last",
+            "linkedin_username": " alex ",
+            "instagram_username": " alex.photo ", "career": " Engineer ",
+            "industry": " Technology ", "profile": " Private notes ", "role": "board"
+        }))
+        .unwrap();
+        let request = input.into_request(42).unwrap();
+        assert!(request.joined_at.is_none());
+        assert_eq!(request.linkedin_username.as_deref(), Some("alex"));
+        assert_eq!(request.instagram_username.as_deref(), Some("alex.photo"));
+        assert_eq!(request.career.as_deref(), Some("Engineer"));
+        assert_eq!(request.industry.as_deref(), Some("Technology"));
+        assert_eq!(request.profile.as_deref(), Some("Private notes"));
+        assert_eq!(request.role, Some(members::MemberRole::Board as i32));
+    }
+
+    #[test]
+    fn update_normalizes_and_clears_optional_fields() {
+        let input = super::MemberUpdate {
+            expected_updated_at: "2020-01-01T00:00:00Z".into(),
+            email: Some(" person@example.com ".into()),
+            first_name: Some(" First ".into()),
+            last_name: Some(" Last ".into()),
+            discord_id: Some(None),
+            discord_username: Some(Some(" ".into())),
+            linkedin_username: Some(None),
+            instagram_username: None,
+            career: None,
+            industry: None,
+            profile: Some(None),
+            role: None,
+        };
+        let request = input.into_request(42).unwrap();
+        assert_eq!(request.member_id, 42);
+        assert_eq!(request.email.as_deref(), Some("person@example.com"));
+        assert_eq!(request.discord_id.as_deref(), Some(""));
+        assert_eq!(request.discord_username.as_deref(), Some(""));
+        assert_eq!(request.profile.as_deref(), Some(""));
+        assert_eq!(request.linkedin_username.as_deref(), Some(""));
+        assert!(request.joined_at.is_none());
+    }
+
+    #[test]
+    fn update_checks_discord_numeric_boundaries_and_required_names() {
+        for (id, valid) in [
+            ("0", false),
+            ("-1", false),
+            ("+1", false),
+            ("abc", false),
+            ("18446744073709551616", false),
+            ("18446744073709551615", true),
+            ("123", true),
+        ] {
+            let input = super::MemberUpdate {
+                expected_updated_at: "2020-01-01T00:00:00Z".into(),
+                email: Some("person@example.com".into()),
+                first_name: Some("First".into()),
+                last_name: Some("Last".into()),
+                discord_id: Some(Some(id.into())),
+                discord_username: Some(Some("testuser".into())),
+                linkedin_username: None,
+                instagram_username: None,
+                career: None,
+                industry: None,
+                profile: None,
+                role: None,
+            };
+            assert_eq!(input.into_request(1).is_ok(), valid, "{id}");
+        }
+        let input = super::MemberUpdate {
+            expected_updated_at: "2020-01-01T00:00:00Z".into(),
+            email: Some("person@example.com".into()),
+            first_name: Some(" ".into()),
+            last_name: Some("Last".into()),
+            discord_id: None,
+            discord_username: None,
+            linkedin_username: None,
+            instagram_username: None,
+            career: None,
+            industry: None,
+            profile: None,
+            role: None,
+        };
+        assert!(matches!(
+            input.into_request(1),
+            Err(UpstreamError::InvalidArgument)
+        ));
+    }
+
+    #[test]
+    fn update_rejects_invalid_id_email_and_discord_pair() {
+        for (id, email, discord_id) in [
+            (0, "person@example.com", None),
+            (1, "bad", None),
+            (1, "person@example.com", Some("123")),
+        ] {
+            let input = super::MemberUpdate {
+                expected_updated_at: "2020-01-01T00:00:00Z".into(),
+                email: Some(email.into()),
+                first_name: Some("First".into()),
+                last_name: Some("Last".into()),
+                discord_id: discord_id.map(|id| Some(id.to_owned())),
+                discord_username: None,
+                linkedin_username: None,
+                instagram_username: None,
+                career: None,
+                industry: None,
+                profile: None,
+                role: None,
+            };
+            assert!(matches!(
+                input.into_request(id),
+                Err(UpstreamError::InvalidArgument)
+            ));
         }
     }
 

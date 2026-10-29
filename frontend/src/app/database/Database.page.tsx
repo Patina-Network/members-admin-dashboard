@@ -9,13 +9,18 @@ import {
   Title,
 } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
+import { useState } from "react";
+
+import type { Member } from "@/lib/api/generated/types.gen";
 
 import AddMembersModal from "@/app/database/_components/AddMembersModal";
+import EditMemberModal from "@/app/database/_components/EditMemberModal";
 import { useMembersQuery } from "@/lib/api/queries/members";
 
 export default function DatabasePage() {
   const [opened, { open, close }] = useDisclosure(false);
   const members = useMembersQuery();
+  const [editing, setEditing] = useState<Member | null>(null);
   return (
     <>
       <Group justify="space-between" mb="md">
@@ -32,6 +37,13 @@ export default function DatabasePage() {
         </Button>
       </Group>
       <AddMembersModal opened={opened} onClose={close} />
+      {editing && (
+        <EditMemberModal
+          key={editing.member_id}
+          member={editing}
+          onClose={() => setEditing(null)}
+        />
+      )}
       {members.isError && (
         <Alert
           color="red"
@@ -91,7 +103,16 @@ export default function DatabasePage() {
                 <Table.Td>
                   {member.discord_username ?? member.discord_id ?? "—"}
                 </Table.Td>
-                <Table.Td />
+                <Table.Td>
+                  <Button
+                    variant="light"
+                    size="xs"
+                    aria-label={`Edit member ${member.member_id}`}
+                    onClick={() => setEditing(member)}
+                  >
+                    Edit
+                  </Button>
+                </Table.Td>
               </Table.Tr>
             ))}
             {(!members.data || members.data.members.length === 0) && (
