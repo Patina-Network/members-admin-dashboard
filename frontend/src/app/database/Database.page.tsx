@@ -41,6 +41,7 @@ export default function DatabasePage() {
     visibleMembers,
     matchingCount,
     hasSearch,
+    showCreatedMember,
   } = useMemberTable();
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [editing, setEditing] = useState<Member | null>(null);
@@ -108,7 +109,11 @@ export default function DatabasePage() {
           {matchingCount === 1 ? "matching member" : "matching members"}
         </Text>
       )}
-      <AddMembersModal opened={opened} onClose={close} />
+      <AddMembersModal
+        opened={opened}
+        onClose={close}
+        onCreated={showCreatedMember}
+      />
       {editing && (
         <EditMemberModal
           key={editing.member_id}

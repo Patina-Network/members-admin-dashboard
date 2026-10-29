@@ -6,6 +6,7 @@ import type {
 } from "@/lib/api/generated/types.gen";
 
 export type AddMembersModalProps = {
+  onCreated: (member: Member) => void;
   opened: boolean;
   onClose: () => void;
 };

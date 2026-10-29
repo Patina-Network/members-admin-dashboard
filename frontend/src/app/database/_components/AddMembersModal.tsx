@@ -11,6 +11,7 @@ import { useAddMemberMutation } from "@/lib/api/queries/members";
 
 export default function AddMembersModal({
   opened,
+  onCreated,
   onClose,
 }: AddMembersModalProps) {
   const [details, setDetails] = useState<string | null>(null);
@@ -28,7 +29,8 @@ export default function AddMembersModal({
     if (submittingRef.current) return;
     submittingRef.current = true;
     addMember.mutate(values, {
-      onSuccess: () => {
+      onSuccess: (member) => {
+        onCreated(member);
         notifications.show({ message: "Member added.", color: "green" });
         form.reset();
         addMember.reset();

@@ -10,7 +10,7 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { MemberDetails } from "@/lib/api/generated/types.gen";
@@ -48,11 +48,16 @@ const member: MemberDetails = {
 };
 function LocationProbe() {
   const location = useLocation();
+  const navigate = useNavigate();
   return (
-    <output aria-label="Current URL">
-      {location.pathname}
-      {location.search}
-    </output>
+    <>
+      <button onClick={() => navigate(-1)}>History back</button>
+      <button onClick={() => navigate(1)}>History forward</button>
+      <output aria-label="Current URL">
+        {location.pathname}
+        {location.search}
+      </output>
+    </>
   );
 }
 
@@ -95,10 +100,14 @@ function deferred<T>() {
   let resolve: (value: T) => void = () => {
     throw new Error("Promise not initialized");
   };
-  const promise = new Promise<T>((complete) => {
+  let reject: (reason: unknown) => void = () => {
+    throw new Error("Promise not initialized");
+  };
+  const promise = new Promise<T>((complete, fail) => {
     resolve = complete;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function submitForm() {
@@ -1114,3 +1123,88 @@ it("filters by role from the button under Add and keeps that filter in the URL",
   expect(screen.getByText("anna@example.com")).toBeInTheDocument();
   expect(screen.queryByText("1 matching member")).not.toBeInTheDocument();
 });
+
+it.each(["/database?page=2", "/database?page=2&search=Ada&role=mentor"])(
+  "shows a created member through refresh from %s",
+  async (entry) => {
+    const members = Array.from({ length: 11 }, (_, i) => ({
+      ...member,
+      member_id: i + 1,
+      email: `old${i}@example.com`,
+      first_name: "Ada",
+      role: "mentor" as const,
+    }));
+    const pending = deferred<ReturnType<typeof memberList>>();
+    vi.mocked(list)
+      .mockResolvedValueOnce(memberList(members))
+      .mockReturnValue(pending.promise);
+    const created = {
+      ...member,
+      member_id: 12,
+      email: "new@example.com",
+      first_name: "Zoe",
+      role: "mentee" as const,
+    };
+    vi.mocked(create).mockResolvedValue({ ...savedMember(), data: created });
+    renderPage(false, entry);
+    await screen.findByText("old10@example.com");
+    const user = await openForm();
+    await fillForm(user);
+    submitForm();
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(await screen.findByText("new@example.com")).toBeInTheDocument();
+    await act(async () => {
+      pending.resolve(memberList([...members, created]));
+    });
+    await waitFor(() =>
+      expect(screen.getByLabelText("Current URL")).toHaveTextContent("?page=2"),
+    );
+    expect(screen.getByText("new@example.com")).toBeInTheDocument();
+  },
+);
+
+it.each([false, true])(
+  "respects history after creation when refresh has failed: %s",
+  async (failBeforeBack) => {
+    const members = Array.from({ length: 21 }, (_, i) => ({
+      ...member,
+      member_id: i + 1,
+      email: `history${i}@example.com`,
+    }));
+    const pending = deferred<ReturnType<typeof memberList>>();
+    vi.mocked(list)
+      .mockResolvedValueOnce(memberList(members))
+      .mockReturnValue(pending.promise);
+    const created = { ...member, member_id: 22, email: "created@example.com" };
+    vi.mocked(create).mockResolvedValue({ ...savedMember(), data: created });
+    renderPage(false, "/database?page=2");
+    await screen.findByText("history10@example.com");
+    await userEvent.click(screen.getByRole("button", { name: "3" }));
+    const user = await openForm();
+    await fillForm(user);
+    submitForm();
+    await screen.findByText("created@example.com");
+    const failRefresh = async () => {
+      await act(async () => {
+        pending.reject(new Error("Refresh failed"));
+      });
+      await screen.findByText("Unable to refresh members");
+    };
+    if (failBeforeBack) await failRefresh();
+    await user.click(screen.getByRole("button", { name: "History back" }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Current URL")).toHaveTextContent("?page=2"),
+    );
+    expect(
+      await screen.findByText("history10@example.com"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("created@example.com")).not.toBeInTheDocument();
+    if (!failBeforeBack) await failRefresh();
+    expect(screen.getByText("history10@example.com")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "History forward" }));
+    expect(await screen.findByText("created@example.com")).toBeInTheDocument();
+    expect(screen.getByLabelText("Current URL")).toHaveTextContent("?page=1");
+  },
+);
