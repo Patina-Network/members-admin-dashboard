@@ -5,8 +5,6 @@ import type {
   NewMember,
 } from "@/lib/api/generated/types.gen";
 
-export type AddMembersView = "choose" | "one" | "bulk-upload";
-
 export type AddMembersModalProps = {
   opened: boolean;
   onClose: () => void;
@@ -48,4 +46,17 @@ export type MemberFieldsProps = {
 export type ArchiveMemberModalProps = {
   member: Member;
   onClose: () => void;
+};
+
+export type RoleFilterProps = {
+  roles: string[];
+  onChange: (roles: string[]) => void;
+};
+
+export type MemberTableRowProps = {
+  member: Member;
+  expanded: boolean;
+  onToggle: () => void;
+  onEdit: (member: Member) => void;
+  onArchive: (member: Member) => void;
 };

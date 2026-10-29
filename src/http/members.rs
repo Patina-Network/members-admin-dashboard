@@ -39,6 +39,15 @@ impl From<MemberRole> for i32 {
     }
 }
 
+fn role_from_proto(role: Option<i32>) -> Option<MemberRole> {
+    match role.and_then(|role| members::MemberRole::try_from(role).ok()) {
+        Some(members::MemberRole::Board) => Some(MemberRole::Board),
+        Some(members::MemberRole::Mentor) => Some(MemberRole::Mentor),
+        Some(members::MemberRole::Mentee) => Some(MemberRole::Mentee),
+        _ => None,
+    }
+}
+
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct NewMember {
     email: String,
@@ -358,6 +367,16 @@ pub struct Member {
     joined_at: Option<String>,
     discord_id: Option<String>,
     discord_username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    linkedin_username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instagram_username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    career: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    industry: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<MemberRole>,
 }
 
 impl From<members::Member> for Member {
@@ -370,6 +389,11 @@ impl From<members::Member> for Member {
             joined_at: value.joined_at.map(|v| v.to_string()),
             discord_id: value.discord_id,
             discord_username: value.discord_username,
+            linkedin_username: value.linkedin_username,
+            instagram_username: value.instagram_username,
+            career: value.career,
+            industry: value.industry,
+            role: role_from_proto(value.role),
         }
     }
 }
@@ -384,6 +408,11 @@ impl From<SensitiveMember> for Member {
             joined_at: value.joined_at.map(|v| v.to_string()),
             discord_id: value.discord_id,
             discord_username: value.discord_username,
+            linkedin_username: value.linkedin_username,
+            instagram_username: value.instagram_username,
+            career: value.career,
+            industry: value.industry,
+            role: role_from_proto(value.role),
         }
     }
 }
@@ -393,12 +422,7 @@ pub struct MemberDetails {
     updated_at: String,
     #[serde(flatten)]
     member: Member,
-    linkedin_username: Option<String>,
-    instagram_username: Option<String>,
-    career: Option<String>,
-    industry: Option<String>,
     profile: Option<String>,
-    role: Option<MemberRole>,
 }
 
 #[derive(utoipa::IntoResponses)]
@@ -457,25 +481,14 @@ where
 
 impl From<SensitiveMember> for MemberDetails {
     fn from(value: SensitiveMember) -> Self {
+        let updated_at = value
+            .updated_at
+            .map(|date| date.to_string())
+            .unwrap_or_default();
+        let profile = value.profile.clone();
         Self {
-            updated_at: value
-                .updated_at
-                .map(|date| date.to_string())
-                .unwrap_or_default(),
-            linkedin_username: value.linkedin_username.clone(),
-            instagram_username: value.instagram_username.clone(),
-            career: value.career.clone(),
-            industry: value.industry.clone(),
-            profile: value.profile.clone(),
-            role: match value
-                .role
-                .and_then(|role| members::MemberRole::try_from(role).ok())
-            {
-                Some(members::MemberRole::Board) => Some(MemberRole::Board),
-                Some(members::MemberRole::Mentor) => Some(MemberRole::Mentor),
-                Some(members::MemberRole::Mentee) => Some(MemberRole::Mentee),
-                _ => None,
-            },
+            updated_at,
+            profile,
             member: value.into(),
         }
     }

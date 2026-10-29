@@ -1,11 +1,17 @@
 import { useForm } from "@mantine/form";
+import { useEffect } from "react";
+import { useSearchParams } from "react-router-dom";
 
 import type { MemberFormValues } from "@/app/database/_components/types";
 import type {
   MemberDetails,
+  MemberRole,
   MemberUpdate,
   NewMember,
 } from "@/lib/api/generated/types.gen";
+
+import { roleLabels } from "@/app/database/_components/memberRoles";
+import { useMembersQuery } from "@/lib/api/queries/members";
 
 function validateSocialUsername(value: string) {
   return /[\s/@?#]/u.test(value.trim()) ?
@@ -153,3 +159,109 @@ export const useEditMemberForm = (member: MemberDetails) => {
   };
   return { form, changedFields };
 };
+
+export const membersPerPage = 10;
+
+function isMemberRole(value: string): value is MemberRole {
+  return Object.hasOwn(roleLabels, value);
+}
+
+/** Keeps member search, role filters, and pagination in the URL without resetting a saved page during loading. */
+export function useMemberTable() {
+  const members = useMembersQuery();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const search = searchParams.get("search") ?? "";
+  const setSearch = (value: string) => {
+    setSearchParams(
+      (current) => {
+        const next = new URLSearchParams(current);
+        if (value) next.set("search", value);
+        else next.delete("search");
+        next.set("page", "1");
+        return next;
+      },
+      { replace: true },
+    );
+  };
+  const roles = searchParams.getAll("role").filter(isMemberRole);
+  const setRoles = (value: string[]) => {
+    setSearchParams(
+      (current) => {
+        const next = new URLSearchParams(current);
+        next.delete("role");
+        for (const role of value) {
+          if (isMemberRole(role)) next.append("role", role);
+        }
+        next.set("page", "1");
+        return next;
+      },
+      { replace: true },
+    );
+  };
+  const requestedPage = Number(searchParams.get("page") ?? 1);
+  const page =
+    Number.isSafeInteger(requestedPage) && requestedPage > 0 ?
+      requestedPage
+    : 1;
+  const setPage = (nextPage: number) => {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.set("page", String(nextPage));
+      return next;
+    });
+  };
+  const allMembers = members.data?.members ?? [];
+  const searchPrefix = search.trim().toLocaleLowerCase();
+  const selectedRoles = new Set(roles);
+  const filteredMembers = allMembers.filter((member) => {
+    const nameMatches = member.first_name
+      .toLocaleLowerCase()
+      .startsWith(searchPrefix);
+    const roleMatches =
+      selectedRoles.size === 0 ||
+      (member.role != null && selectedRoles.has(member.role));
+    return nameMatches && roleMatches;
+  });
+  const pageCount = Math.max(
+    1,
+    Math.ceil(filteredMembers.length / membersPerPage),
+  );
+  const currentPage = Math.min(page, pageCount);
+  useEffect(() => {
+    // Wait for a successful list before correcting a saved page number.
+    if (!members.isSuccess || members.isFetching) return;
+    const rawPage = searchParams.get("page");
+    if (rawPage === null || rawPage === String(currentPage)) return;
+    setSearchParams(
+      (current) => {
+        const next = new URLSearchParams(current);
+        next.set("page", String(currentPage));
+        return next;
+      },
+      { replace: true },
+    );
+  }, [
+    currentPage,
+    members.isSuccess,
+    members.isFetching,
+    searchParams,
+    setSearchParams,
+  ]);
+  const visibleMembers = filteredMembers.slice(
+    (currentPage - 1) * membersPerPage,
+    currentPage * membersPerPage,
+  );
+  return {
+    members,
+    search,
+    setSearch,
+    roles,
+    setRoles,
+    setPage,
+    currentPage,
+    pageCount,
+    visibleMembers,
+    matchingCount: filteredMembers.length,
+    hasSearch: searchPrefix.length > 0,
+  };
+}

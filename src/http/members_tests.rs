@@ -1430,3 +1430,47 @@ fn rejects_invalid_fields() {
         ));
     }
 }
+
+#[test]
+fn public_member_fields_match_details_without_exposing_profile() {
+    for (role, expected) in [
+        (None, None),
+        (Some(0), None),
+        (Some(1), Some("board")),
+        (Some(2), Some("mentee")),
+        (Some(3), Some("mentor")),
+        (Some(99), None),
+    ] {
+        let stored = SensitiveMember {
+            member_id: 42,
+            linkedin_username: Some("alex".into()),
+            instagram_username: Some("alex.photo".into()),
+            career: Some("Engineer".into()),
+            industry: Some("Technology".into()),
+            profile: Some("Private notes".into()),
+            role,
+            ..Default::default()
+        };
+        let public = serde_json::to_value(Member::from(stored.clone())).unwrap();
+        let details = serde_json::to_value(super::MemberDetails::from(stored)).unwrap();
+        for field in [
+            "linkedin_username",
+            "instagram_username",
+            "career",
+            "industry",
+            "role",
+        ] {
+            assert_eq!(public.get(field), details.get(field), "{field}");
+        }
+        assert_eq!(public["linkedin_username"], "alex");
+        assert_eq!(public["instagram_username"], "alex.photo");
+        assert_eq!(public["career"], "Engineer");
+        assert_eq!(public["industry"], "Technology");
+        assert_eq!(
+            public.get("role").and_then(|value| value.as_str()),
+            expected
+        );
+        assert!(public.get("profile").is_none());
+        assert_eq!(details["profile"], "Private notes");
+    }
+}
