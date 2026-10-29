@@ -6,6 +6,8 @@
 const baseDir = "src";
 
 export const exclusions = [
+  // Separate Rust test modules are compiled only under #[cfg(test)].
+  `${baseDir}/**/*_tests.rs`,
   `${baseDir}/main.rs`,
   `${baseDir}/config.rs`,
   `${baseDir}/http/mod.rs`,
