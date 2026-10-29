@@ -44,3 +44,8 @@ export type MemberFieldsProps = {
   details: string | null;
   setDetails: (value: string | null) => void;
 };
+
+export type ArchiveMemberModalProps = {
+  member: Member;
+  onClose: () => void;
+};

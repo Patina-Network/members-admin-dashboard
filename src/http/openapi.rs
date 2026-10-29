@@ -11,7 +11,8 @@ use utoipa::OpenApi;
         super::auth::current_session,
         super::auth::logout,
         super::members::update,
-        super::members::details
+        super::members::details,
+        super::members::archive
     ),
     components(schemas(
         super::ErrorBody,

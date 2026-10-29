@@ -39,7 +39,9 @@ pub fn app(state: AppState) -> Router {
         .route("/auth/logout", post(auth::logout))
         .route(
             "/members/{member_id}",
-            get(members::details).put(members::update),
+            get(members::details)
+                .put(members::update)
+                .delete(members::archive),
         )
         .fallback(not_found);
     let mut router = Router::new();

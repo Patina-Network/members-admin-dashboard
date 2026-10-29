@@ -14,6 +14,7 @@ import { useState } from "react";
 import type { Member } from "@/lib/api/generated/types.gen";
 
 import AddMembersModal from "@/app/database/_components/AddMembersModal";
+import ArchiveMemberModal from "@/app/database/_components/ArchiveMemberModal";
 import EditMemberModal from "@/app/database/_components/EditMemberModal";
 import { useMembersQuery } from "@/lib/api/queries/members";
 
@@ -21,6 +22,7 @@ export default function DatabasePage() {
   const [opened, { open, close }] = useDisclosure(false);
   const members = useMembersQuery();
   const [editing, setEditing] = useState<Member | null>(null);
+  const [archiving, setArchiving] = useState<Member | null>(null);
   return (
     <>
       <Group justify="space-between" mb="md">
@@ -42,6 +44,13 @@ export default function DatabasePage() {
           key={editing.member_id}
           member={editing}
           onClose={() => setEditing(null)}
+        />
+      )}
+      {archiving && (
+        <ArchiveMemberModal
+          key={archiving.member_id}
+          member={archiving}
+          onClose={() => setArchiving(null)}
         />
       )}
       {members.isError && (
@@ -111,6 +120,16 @@ export default function DatabasePage() {
                     onClick={() => setEditing(member)}
                   >
                     Edit
+                  </Button>
+                  <Button
+                    variant="light"
+                    color="red"
+                    size="xs"
+                    ml="xs"
+                    aria-label={`Archive member ${member.member_id}`}
+                    onClick={() => setArchiving(member)}
+                  >
+                    Archive
                   </Button>
                 </Table.Td>
               </Table.Tr>

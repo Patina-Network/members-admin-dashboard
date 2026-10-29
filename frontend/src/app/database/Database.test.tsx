@@ -13,6 +13,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import DatabasePage from "@/app/database/Database.page";
 import {
+  archive,
   create,
   currentSession,
   details,
@@ -21,6 +22,7 @@ import {
 } from "@/lib/api/generated/sdk.gen";
 
 vi.mock("@/lib/api/generated/sdk.gen", () => ({
+  archive: vi.fn(),
   create: vi.fn(),
   currentSession: vi.fn(),
   details: vi.fn(),
@@ -775,5 +777,84 @@ describe("member list states", () => {
     await act(async () => pending.resolve(memberList([])));
     expect(screen.getByText("1 member")).toBeInTheDocument();
     expect(screen.getByText(member.email)).toBeInTheDocument();
+  });
+});
+
+describe("archive member", () => {
+  it("requires confirmation, supports cancel, and refreshes the table and count", async () => {
+    vi.mocked(list).mockResolvedValue(memberList([member]));
+    vi.mocked(archive).mockResolvedValue({
+      data: undefined,
+      request: new Request("http://localhost/api/members/1"),
+      response: new Response(null, { status: 204 }),
+    });
+    renderPage();
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Archive member 1" }),
+    );
+    expect(
+      screen.getByText(/Their record will be archived and retained/),
+    ).toHaveTextContent("First Last");
+    const confirmation = within(screen.getByRole("dialog"));
+    expect(confirmation.getByText(`Email: ${member.email}`)).toBeVisible();
+    expect(
+      confirmation.getByText(`Member ID: ${member.member_id}`),
+    ).toBeVisible();
+    expect(archive).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    await user.click(screen.getByRole("button", { name: "Archive member 1" }));
+    vi.mocked(list).mockResolvedValue(memberList([]));
+    await user.click(screen.getByRole("button", { name: "Archive member" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(archive).toHaveBeenCalledWith({
+      path: { member_id: 1 },
+      headers: { "X-CSRF-Token": "test-csrf" },
+    });
+    expect(screen.getByText("0 members")).toBeInTheDocument();
+    expect(screen.queryByText(member.email)).not.toBeInTheDocument();
+    expect(list).toHaveBeenCalledTimes(2);
+  });
+
+  it("blocks duplicate writes and dismissal, and retains the confirmation on failure", async () => {
+    vi.mocked(list).mockResolvedValue(memberList([member]));
+    const pending = deferred<{
+      data: undefined;
+      error: { error: string };
+      request: Request;
+      response: Response;
+    }>();
+    vi.mocked(archive).mockReturnValue(pending.promise);
+    renderPage(3);
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Archive member 1" }),
+    );
+    const confirm = screen.getByRole("button", { name: "Archive member" });
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+    await waitFor(() => expect(archive).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    await act(async () =>
+      pending.resolve({
+        data: undefined,
+        error: { error: "upstream timeout" },
+        request: new Request("http://localhost/api/members/1"),
+        response: new Response(null, { status: 504 }),
+      }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not confirm whether the member was archived",
+    );
+    expect(archive).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    expect(screen.getByText("1 member")).toBeInTheDocument();
   });
 });

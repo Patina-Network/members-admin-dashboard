@@ -27,6 +27,7 @@ utoipa-swagger-ui = { version = "9", features = ["axum", "vendored"] }
 members-grpc-service = { version = "=1.0.6-beta.g16bc4a7b", registry = "patina" }
 
 [dev-dependencies]
+tokio-stream = { version = "0.1", features = ["net"] }
 tokio = { version = "1", features = ["test-util"] }
 chrono = "0.4"
 http-body-util = "0.1"
