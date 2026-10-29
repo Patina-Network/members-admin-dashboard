@@ -1,8 +1,8 @@
 import { Button, SimpleGrid, Table, Text } from "@mantine/core";
 
-import type { MemberTableRowProps } from "@/app/database/_components/types";
+import type { MemberTableRowProps } from "@/app/database/_components/shared/types";
 
-import { roleLabels } from "@/app/database/_components/memberRoles";
+import { roleLabels } from "@/app/database/_components/shared/memberRoles";
 
 function display(value: string | null | undefined) {
   return value || "—";

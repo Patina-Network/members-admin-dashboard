@@ -13,6 +13,7 @@ import {
 } from "@/lib/api/generated/@tanstack/react-query.gen";
 import {
   archive,
+  bulkCreate,
   create,
   currentSession,
   details,
@@ -218,6 +219,35 @@ export const useArchiveMemberMutation = () => {
         return { members, total: members.length };
       });
       void queryClient.invalidateQueries({ queryKey: membersKey });
+    },
+  });
+};
+
+export const useBulkAddMembersMutation = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    retry: false,
+    mutationFn: async (members: NewMember[]) => {
+      const uncertain =
+        "Could not confirm import results. Refresh before retrying.";
+      const csrfToken = await getAdminCsrfToken("adding");
+      const result = await bulkCreate({
+        body: { members },
+        headers: { "X-CSRF-Token": csrfToken },
+      }).catch(() => {
+        throw new Error(uncertain);
+      });
+      if (!result.data)
+        throw new Error(
+          !result.response || result.response.status >= 500 ?
+            uncertain
+          : (result.error?.error ?? "Unable to import members."),
+        );
+      return result.data;
+    },
+    onSettled: async () => {
+      await queryClient.cancelQueries({ queryKey: membersKey });
+      await queryClient.invalidateQueries({ queryKey: membersKey });
     },
   });
 };

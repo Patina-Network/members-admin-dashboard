@@ -755,9 +755,37 @@ impl members::admin::members_admin_service_server::MembersAdminService for Membe
     }
     async fn bulk_member_operations(
         &self,
-        _: tonic::Request<members::admin::BulkMemberOperationsRequest>,
+        request: tonic::Request<members::admin::BulkMemberOperationsRequest>,
     ) -> Result<GrpcResponse<members::admin::BulkMemberOperationsResponse>, Status> {
-        panic!("archive must not call bulk_member_operations")
+        use members::admin::*;
+        assert_eq!(request.metadata().get("profile").unwrap(), "core_admin");
+        assert!(request.metadata().contains_key("grpc-timeout"));
+        let operations = request.into_inner().operations;
+        assert_eq!(operations.len(), 2);
+        for operation in operations {
+            assert!(matches!(
+                operation.operation,
+                Some(member_operation::Operation::Create(_))
+            ));
+        }
+        Ok(GrpcResponse::new(BulkMemberOperationsResponse {
+            results: vec![
+                MemberOperationResult {
+                    index: 1,
+                    outcome: Some(member_operation_result::Outcome::Failed(
+                        MemberOperationFailed {
+                            error: "Duplicate email".into(),
+                        },
+                    )),
+                },
+                MemberOperationResult {
+                    index: 0,
+                    outcome: Some(member_operation_result::Outcome::Created(MemberCreated {
+                        member: Some(sensitive_member()),
+                    })),
+                },
+            ],
+        }))
     }
     async fn archive_member(
         &self,
@@ -1472,5 +1500,83 @@ fn public_member_fields_match_details_without_exposing_profile() {
         );
         assert!(public.get("profile").is_none());
         assert_eq!(details["profile"], "Private notes");
+    }
+}
+
+#[tokio::test]
+async fn bulk_handler_uses_create_operations_and_maps_indexed_results() {
+    let (state, _server) = member_server(Some(Reply::Success)).await;
+    let body = serde_json::from_value(serde_json::json!({ "members": [
+        { "email": "person@example.com", "first_name": "A", "last_name": "B" },
+        { "email": "person@example.com", "first_name": "A", "last_name": "B" }
+    ] }))
+    .unwrap();
+    let response = super::bulk_create(axum::extract::State(state), Ok(Json(body)))
+        .await
+        .into_response();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body["results"][0]["index"], 0);
+    assert_eq!(body["results"][0]["member"]["member_id"], 42);
+    assert_eq!(body["results"][1]["error"], "Duplicate email");
+}
+
+#[tokio::test]
+async fn bulk_http_route_enforces_the_encoded_request_limit() {
+    use crate::auth::session::{self, Principal, User};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+    use tower_sessions::{MemoryStore, Session, SessionManagerLayer};
+
+    let (state, _server) = member_server(Some(Reply::Success)).await;
+    let store = MemoryStore::default();
+    let session = Session::new(None, Arc::new(store.clone()), None);
+    session::establish(
+        &session,
+        Principal {
+            user: User {
+                id: "test".into(),
+                name: "Admin".into(),
+                is_admin: true,
+            },
+            csrf_token: "csrf".into(),
+            expires_at: time::OffsetDateTime::now_utc().unix_timestamp() + 60,
+        },
+    )
+    .await
+    .unwrap();
+    let router = crate::http::app(state).layer(
+        SessionManagerLayer::new(store)
+            .with_name("members_session")
+            .with_secure(false),
+    );
+    let cookie = format!("members_session={}", session.id().unwrap());
+    let body = serde_json::json!({ "members": [
+        { "email": "first@example.com", "first_name": "A", "last_name": "B", "profile": "x".repeat(1024 * 1024 - 200) },
+        { "email": "second@example.com", "first_name": "C", "last_name": "D" },
+    ] }).to_string();
+    const LIMIT: usize = 2 * 1024 * 1024;
+    for (size, status) in [
+        (body.len(), StatusCode::OK),
+        (LIMIT, StatusCode::OK),
+        (LIMIT + 1, StatusCode::BAD_REQUEST),
+    ] {
+        let mut padded_body = body.clone();
+        padded_body.extend(std::iter::repeat_n(' ', size - body.len()));
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/members/bulk")
+                    .header("cookie", &cookie)
+                    .header("x-csrf-token", "csrf")
+                    .header("content-type", "application/json")
+                    .body(Body::from(padded_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status, "request size: {size}");
     }
 }

@@ -6,23 +6,21 @@ import {
   useSearchParams,
 } from "react-router-dom";
 
-import type { MemberFormValues } from "@/app/database/_components/types";
+import type { MemberFormValues } from "@/app/database/_components/shared/types";
 import type {
   Member,
   MemberDetails,
-  MemberRole,
   MemberUpdate,
   NewMember,
 } from "@/lib/api/generated/types.gen";
 
-import { roleLabels } from "@/app/database/_components/memberRoles";
+import { isMemberRole } from "@/app/database/_components/shared/memberRoles";
+import {
+  validateDiscordId,
+  validateEmail,
+  validateSocialUsername,
+} from "@/app/database/_components/shared/memberValidation";
 import { useMembersQuery } from "@/lib/api/queries/members";
-
-function validateSocialUsername(value: string) {
-  return /[\s/@?#]/u.test(value.trim()) ?
-      "Please enter a username without a URL, @, or spaces"
-    : null;
-}
 
 const initialValues: MemberFormValues = {
   email: "",
@@ -64,18 +62,7 @@ export const useMemberForm = (
     validate: {
       discordId: (value, values) => {
         if (!discordChanged(values)) return null;
-        const id = value.trim();
-        if (!id)
-          return values.discordUsername.trim() ?
-              "Discord ID is required with a username"
-            : null;
-        return (
-            /^\d+$/.test(id) &&
-              BigInt(id) > 0n &&
-              BigInt(id) <= 18446744073709551615n
-          ) ?
-            null
-          : "Enter a valid Discord ID";
+        return validateDiscordId(value, values.discordUsername);
       },
       discordUsername: (value, values) =>
         discordChanged(values) && values.discordId.trim() && !value.trim() ?
@@ -83,10 +70,7 @@ export const useMemberForm = (
         : null,
       linkedinUsername: validateSocialUsername,
       instagramUsername: validateSocialUsername,
-      email: (value) =>
-        /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim()) ? null : (
-          "Enter a valid email"
-        ),
+      email: validateEmail,
       firstName: (value) => (value.trim() ? null : "First name is required"),
       lastName: (value) => (value.trim() ? null : "Last name is required"),
       joinedAt: (value) => {
@@ -167,10 +151,6 @@ export const useEditMemberForm = (member: MemberDetails) => {
 
 export const membersPerPage = 10;
 
-function isMemberRole(value: string): value is MemberRole {
-  return Object.prototype.hasOwnProperty.call(roleLabels, value);
-}
-
 /** Keeps member search, role filters, and pagination in the URL without resetting a saved page during loading. */
 export function useMemberTable() {
   const members = useMembersQuery();
@@ -240,7 +220,6 @@ export function useMemberTable() {
     1,
     Math.ceil(filteredMembers.length / membersPerPage),
   );
-  // History navigation must win immediately, before the cleanup effect runs.
   const createdIndex =
     navigationType === "POP" ? -1 : (
       filteredMembers.findIndex(
@@ -265,9 +244,7 @@ export function useMemberTable() {
     );
   };
   useEffect(() => {
-    // Wait for a successful list before correcting a saved page number.
     if (!members.isSuccess || members.isFetching) return;
-    // Release the temporary focus once the refreshed ordering is available.
     setCreatedMemberId(null);
     const rawPage = searchParams.get("page");
     if (rawPage === null || rawPage === String(currentPage)) return;

@@ -6,9 +6,9 @@ import {
   Textarea,
 } from "@mantine/core";
 
-import type { MemberFieldsProps } from "@/app/database/_components/types";
+import type { MemberFieldsProps } from "@/app/database/_components/shared/types";
 
-import { roleOptions } from "@/app/database/_components/memberRoles";
+import { roleOptions } from "@/app/database/_components/shared/memberRoles";
 
 export default function MemberFields({
   form,

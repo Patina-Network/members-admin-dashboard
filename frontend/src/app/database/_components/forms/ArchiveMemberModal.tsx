@@ -2,7 +2,7 @@ import { Alert, Button, Group, Modal, Stack, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useRef } from "react";
 
-import type { ArchiveMemberModalProps } from "@/app/database/_components/types";
+import type { ArchiveMemberModalProps } from "@/app/database/_components/shared/types";
 
 import { useArchiveMemberMutation } from "@/lib/api/queries/members";
 

@@ -5,11 +5,11 @@ import { useRef, useState } from "react";
 import type {
   EditMemberFormProps,
   EditMemberModalProps,
-} from "@/app/database/_components/types";
+} from "@/app/database/_components/shared/types";
 import type { NewMember } from "@/lib/api/generated/types.gen";
 
-import { useEditMemberForm } from "@/app/database/_components/hook";
-import MemberFields from "@/app/database/_components/MemberFields";
+import MemberFields from "@/app/database/_components/forms/MemberFields";
+import { useEditMemberForm } from "@/app/database/_components/shared/hook";
 import {
   useMemberDetailsQuery,
   useUpdateMemberMutation,

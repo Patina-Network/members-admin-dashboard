@@ -136,7 +136,6 @@ fn validate_update_fields(
     Ok(())
 }
 
-// Omitted fields preserve stored values; explicit null clears optional fields.
 fn deserialize_update<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: Deserializer<'de>,
@@ -155,8 +154,6 @@ fn optional(value: Option<String>) -> Option<String> {
 
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
-/// Optional fields omitted from an update are preserved. Explicit null or an empty string
-/// clears optional text fields; null clears role. Joined dates cannot be updated.
 pub struct MemberUpdate {
     expected_updated_at: String,
     email: Option<String>,
@@ -246,7 +243,6 @@ pub async fn update(
     .await
 }
 
-// This preflight detects stale forms. Atomic compare-and-update requires upstream RPC support.
 async fn checked_update_with<R, RFut, W, WFut>(
     member_id: i32,
     body: Result<Json<MemberUpdate>, JsonRejection>,
@@ -541,6 +537,90 @@ where
     let response = grpc::call_admin(timeout, body.try_into()?, rpc).await?;
     let member = response.member.ok_or(UpstreamError::Failed)?;
     Ok(CreateResponse::Created(member.into()))
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct BulkMembers {
+    members: Vec<NewMember>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct BulkResult {
+    index: usize,
+    member: Option<Member>,
+    error: Option<String>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct BulkResults {
+    results: Vec<BulkResult>,
+}
+
+#[utoipa::path(post, path = "/api/members/bulk", request_body = BulkMembers, responses((status = 200, body = BulkResults), UpstreamError))]
+pub async fn bulk_create(
+    State(state): State<AppState>,
+    body: Result<Json<BulkMembers>, JsonRejection>,
+) -> Result<Json<BulkResults>, UpstreamError> {
+    use members::admin::{
+        BulkMemberOperationsRequest, MemberOperation, member_operation::Operation,
+        member_operation_result::Outcome,
+    };
+    let Json(body) = body.map_err(|_| UpstreamError::InvalidArgument)?;
+    if body.members.is_empty() || body.members.len() > 1000 {
+        return Err(UpstreamError::InvalidArgument);
+    }
+    let mut results = Vec::new();
+    let mut operations = Vec::new();
+    let mut indices = Vec::new();
+    for (index, member) in body.members.into_iter().enumerate() {
+        match CreateMemberRequest::try_from(member) {
+            Ok(request) => {
+                indices.push(index);
+                operations.push(MemberOperation {
+                    operation: Some(Operation::Create(request)),
+                });
+            }
+            Err(_) => results.push(BulkResult {
+                index,
+                member: None,
+                error: Some("Invalid member fields".into()),
+            }),
+        }
+    }
+    if !operations.is_empty() {
+        let mut client = state.client.clone();
+        let response = grpc::call_admin(
+            state.config.members_admin_service_grpc_timeout,
+            BulkMemberOperationsRequest { operations },
+            |request| async move { client.bulk_member_operations(request).await },
+        )
+        .await?;
+        let mut outcomes: BTreeMap<_, _> = response
+            .results
+            .into_iter()
+            .map(|row| (row.index as usize, row.outcome))
+            .collect();
+        for (position, index) in indices.into_iter().enumerate() {
+            let outcome = outcomes.remove(&position).flatten();
+            let (member, error) = match outcome {
+                Some(Outcome::Created(created)) if created.member.is_some() => {
+                    (created.member.map(Into::into), None)
+                }
+                Some(Outcome::Failed(failed)) => (None, Some(failed.error)),
+                _ => (
+                    None,
+                    Some("Could not confirm result. Refresh before retrying.".into()),
+                ),
+            };
+            results.push(BulkResult {
+                index,
+                member,
+                error,
+            });
+        }
+    }
+    results.sort_by_key(|row| row.index);
+    Ok(Json(BulkResults { results }))
 }
 
 #[derive(utoipa::IntoResponses)]
