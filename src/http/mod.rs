@@ -3,6 +3,7 @@ pub mod openapi;
 pub mod state;
 
 mod health;
+mod members;
 mod metrics;
 mod spa;
 mod version;
@@ -31,6 +32,7 @@ pub struct ErrorBody {
 
 pub fn app(state: AppState) -> Router {
     let api = Router::new()
+        .route("/members", get(members::list).post(members::create))
         .route("/auth/login", get(auth::login))
         .route("/auth/callback", get(auth::callback))
         .route("/auth/session", get(auth::current_session))

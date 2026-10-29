@@ -231,8 +231,13 @@ mod tests {
             )
             .await;
             assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            let expected = if method == Method::POST {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::METHOD_NOT_ALLOWED
+            };
             let response = request(router.clone(), method, "/api/members", &cookie, "csrf").await;
-            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+            assert_eq!(response.status(), expected);
         }
     }
 

@@ -1,4 +1,5 @@
 import {
+  Alert,
   Box,
   Button,
   Group,
@@ -7,17 +8,61 @@ import {
   Text,
   Title,
 } from "@mantine/core";
+import { useDisclosure } from "@mantine/hooks";
+
+import AddMembersModal from "@/app/database/_components/AddMembersModal";
+import { useMembersQuery } from "@/lib/api/queries/members";
 
 export default function DatabasePage() {
+  const [opened, { open, close }] = useDisclosure(false);
+  const members = useMembersQuery();
   return (
     <>
       <Group justify="space-between" mb="md">
         <Box>
           <Title order={2}>Database</Title>
-          <Text c="dimmed">— members</Text>
+          <Text c="dimmed">
+            {members.data?.total != null ?
+              `${members.data.total} ${members.data.total === 1 ? "member" : "members"}`
+            : "— members"}
+          </Text>
         </Box>
-        <Button type="button">Add</Button>
+        <Button type="button" onClick={open}>
+          Add
+        </Button>
       </Group>
+      <AddMembersModal opened={opened} onClose={close} />
+      {members.isError && (
+        <Alert
+          color="red"
+          role="alert"
+          mb="md"
+          title={
+            members.data ?
+              "Unable to refresh members"
+            : "Unable to load members"
+          }
+        >
+          <Text>
+            {members.data ?
+              "Showing previously loaded members. Please try again."
+            : "Please try again to load the member list."}
+          </Text>
+          <Button
+            mt="sm"
+            variant="light"
+            onClick={() => void members.refetch()}
+            loading={members.isFetching}
+          >
+            Retry
+          </Button>
+        </Alert>
+      )}
+      {members.isFetching && members.data && (
+        <Text role="status" mb="sm">
+          Refreshing members…
+        </Text>
+      )}
       <Box mah="70vh" style={{ overflow: "auto" }}>
         <Table striped withRowBorders={false} verticalSpacing="md">
           <Table.Thead>
@@ -32,13 +77,36 @@ export default function DatabasePage() {
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
-            <Table.Tr>
-              <Table.Td colSpan={7}>
-                <Text fw={500} ta="center">
-                  Members will appear here
-                </Text>
-              </Table.Td>
-            </Table.Tr>
+            {members.data?.members.map((member) => (
+              <Table.Tr key={member.member_id}>
+                <Table.Td>{member.member_id}</Table.Td>
+                <Table.Td>{member.email}</Table.Td>
+                <Table.Td>{member.first_name}</Table.Td>
+                <Table.Td>{member.last_name}</Table.Td>
+                <Table.Td>
+                  {member.joined_at ?
+                    new Date(member.joined_at).toLocaleString()
+                  : "—"}
+                </Table.Td>
+                <Table.Td>
+                  {member.discord_username ?? member.discord_id ?? "—"}
+                </Table.Td>
+                <Table.Td />
+              </Table.Tr>
+            ))}
+            {(!members.data || members.data.members.length === 0) && (
+              <Table.Tr>
+                <Table.Td colSpan={7}>
+                  <Text fw={500} ta="center">
+                    {members.isPending ?
+                      "Loading members…"
+                    : members.isError ?
+                      "Member list unavailable"
+                    : "Members will appear here"}
+                  </Text>
+                </Table.Td>
+              </Table.Tr>
+            )}
           </Table.Tbody>
         </Table>
       </Box>

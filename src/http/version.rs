@@ -34,7 +34,10 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use http_body_util::BodyExt;
-    use members_grpc_service::members::admin::members_admin_service_client::MembersAdminServiceClient;
+    use members_grpc_service::members::{
+        admin::members_admin_service_client::MembersAdminServiceClient,
+        members_service_client::MembersServiceClient,
+    };
     use metrics_exporter_prometheus::PrometheusBuilder;
     use std::time::Duration;
     use tonic::transport::Endpoint;
@@ -42,11 +45,11 @@ mod tests {
     #[tokio::test]
     async fn returns_configured_version_or_fallback() {
         for (configured, expected) in [(Some("test".to_owned()), "test"), (None, "N/A")] {
+            let channel = Endpoint::from_static("http://localhost:50051").connect_lazy();
             let state = AppState {
                 auth: None,
-                client: MembersAdminServiceClient::new(
-                    Endpoint::from_static("http://localhost:50051").connect_lazy(),
-                ),
+                members_client: MembersServiceClient::new(channel.clone()),
+                client: MembersAdminServiceClient::new(channel),
                 prometheus_handle: PrometheusBuilder::new().build_recorder().handle(),
                 sys_collector: metrics_process::Collector::default(),
                 config: Config {
