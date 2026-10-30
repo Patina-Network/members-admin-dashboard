@@ -12,6 +12,7 @@ use std::any::Any;
 
 use axum::{
     Json, Router,
+    extract::DefaultBodyLimit,
     http::StatusCode,
     middleware,
     response::{IntoResponse, Response},
@@ -33,6 +34,10 @@ pub struct ErrorBody {
 pub fn app(state: AppState) -> Router {
     let api = Router::new()
         .route("/members", get(members::list).post(members::create))
+        .route(
+            "/members/bulk",
+            post(members::bulk_create).layer(DefaultBodyLimit::max(2 * 1024 * 1024)),
+        )
         .route("/auth/login", get(auth::login))
         .route("/auth/callback", get(auth::callback))
         .route("/auth/session", get(auth::current_session))

@@ -16,16 +16,16 @@ import { useState } from "react";
 
 import type { Member } from "@/lib/api/generated/types.gen";
 
-import AddMembersModal from "@/app/database/_components/AddMembersModal";
-import ArchiveMemberModal from "@/app/database/_components/ArchiveMemberModal";
-import EditMemberModal from "@/app/database/_components/EditMemberModal";
+import AddMembersModal from "@/app/database/_components/forms/AddMembersModal";
+import ArchiveMemberModal from "@/app/database/_components/forms/ArchiveMemberModal";
+import EditMemberModal from "@/app/database/_components/forms/EditMemberModal";
 import {
   membersPerPage,
   useMemberTable,
-} from "@/app/database/_components/hook";
-import MembersTableSkeleton from "@/app/database/_components/MembersTableSkeleton";
-import MemberTableRow from "@/app/database/_components/MemberTableRow";
-import RoleFilter from "@/app/database/_components/RoleFilter";
+} from "@/app/database/_components/shared/hook";
+import MembersTableSkeleton from "@/app/database/_components/table/MembersTableSkeleton";
+import MemberTableRow from "@/app/database/_components/table/MemberTableRow";
+import RoleFilter from "@/app/database/_components/table/RoleFilter";
 
 export default function DatabasePage() {
   const [opened, { open, close }] = useDisclosure(false);

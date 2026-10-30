@@ -1,8 +1,8 @@
 import { Button, Checkbox, Popover, Stack } from "@mantine/core";
 
-import type { RoleFilterProps } from "@/app/database/_components/types";
+import type { RoleFilterProps } from "@/app/database/_components/shared/types";
 
-import { roleOptions } from "@/app/database/_components/memberRoles";
+import { roleOptions } from "@/app/database/_components/shared/memberRoles";
 
 export default function RoleFilter({ roles, onChange }: RoleFilterProps) {
   return (

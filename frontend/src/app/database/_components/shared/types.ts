@@ -1,4 +1,4 @@
-import type { useMemberForm } from "@/app/database/_components/hook";
+import type { useMemberForm } from "@/app/database/_components/shared/hook";
 import type {
   Member,
   MemberDetails,
@@ -60,4 +60,14 @@ export type MemberTableRowProps = {
   onToggle: () => void;
   onEdit: (member: Member) => void;
   onArchive: (member: Member) => void;
+};
+
+export type BulkMembersProps = {
+  onBack: () => void;
+  onPending: (pending: boolean) => void;
+};
+
+export type CsvMemberRow = {
+  sourceRow: number;
+  member: NewMember;
 };

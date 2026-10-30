@@ -18,6 +18,7 @@ import type { MemberDetails } from "@/lib/api/generated/types.gen";
 import DatabasePage from "@/app/database/Database.page";
 import {
   archive,
+  bulkCreate,
   create,
   currentSession,
   details,
@@ -27,6 +28,7 @@ import {
 
 vi.mock("@/lib/api/generated/sdk.gen", () => ({
   archive: vi.fn(),
+  bulkCreate: vi.fn(),
   create: vi.fn(),
   currentSession: vi.fn(),
   details: vi.fn(),
@@ -202,7 +204,7 @@ describe("add member", () => {
     );
     await user.click(screen.getByRole("button", { name: "Add" }));
     expect(await screen.findByLabelText(/^Email/)).toHaveValue("");
-    expect(screen.queryByText("Upload Bulk Member(s)")).not.toBeInTheDocument();
+    expect(screen.getByText("Upload Bulk Member(s)")).toBeInTheDocument();
   });
   it("submits all optional member fields with trimmed values", async () => {
     vi.mocked(create).mockResolvedValue(savedMember());
@@ -1206,5 +1208,158 @@ it.each([false, true])(
     await user.click(screen.getByRole("button", { name: "History forward" }));
     expect(await screen.findByText("created@example.com")).toBeInTheDocument();
     expect(screen.getByLabelText("Current URL")).toHaveTextContent("?page=1");
+  },
+);
+it("previews CSV, cancels to upload, submits bulk and shows row outcomes", async () => {
+  const refresh = deferred<ReturnType<typeof memberList>>();
+  vi.mocked(list)
+    .mockResolvedValueOnce(memberList([member]))
+    .mockReturnValueOnce(refresh.promise);
+  vi.mocked(currentSession).mockResolvedValue({
+    data: { user: { isAdmin: true }, csrfToken: "token" },
+    response,
+  } as never);
+  vi.mocked(bulkCreate).mockResolvedValue({
+    data: {
+      results: [
+        { index: 0, member, error: null },
+        { index: 1, member: null, error: "Duplicate email" },
+      ],
+    },
+    response,
+  } as never);
+  renderPage();
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Add" }));
+  await user.click(
+    screen.getByRole("button", { name: "Upload Bulk Member(s)" }),
+  );
+  expect(
+    screen.getByText("Optional columns — leave blank if unused"),
+  ).toBeVisible();
+  const file = new File([""], "members.csv", { type: "text/csv" });
+  Object.defineProperty(file, "text", {
+    value: async () =>
+      "email,first_name,last_name,role\n\na@b.com,A,B,mentor\na@b.com,A,B,mentee",
+  });
+  const upload = () => {
+    const input =
+      document.querySelector<HTMLInputElement>('input[type="file"]');
+    if (!input) throw new Error("Missing CSV input");
+    return user.upload(input, file);
+  };
+  await upload();
+  await screen.findByText(
+    'Ready to add 2 members. Click "Add All" to confirm.',
+  );
+  expect(screen.getByText("File name: members.csv")).toBeInTheDocument();
+  const preview = within(screen.getByRole("dialog")).getByRole("table");
+  expect(
+    within(preview)
+      .getAllByRole("row")
+      .slice(1)
+      .map((row) => within(row).getAllByRole("cell")[0]?.textContent),
+  ).toEqual(["3", "4"]);
+  expect(within(preview).getByText("mentor")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(screen.getByText(/Drag.*CSV/i)).toBeInTheDocument();
+  await upload();
+  await user.click(await screen.findByRole("button", { name: "Add All" }));
+  await screen.findByText("1 added, 1 failed");
+  expect(screen.getByText("Duplicate email")).toBeInTheDocument();
+  expect(bulkCreate).toHaveBeenCalledTimes(1);
+  expect(bulkCreate).toHaveBeenCalledWith(
+    expect.objectContaining({
+      body: {
+        members: [
+          { email: "a@b.com", first_name: "A", last_name: "B", role: "mentor" },
+          { email: "a@b.com", first_name: "A", last_name: "B", role: "mentee" },
+        ],
+      },
+    }),
+  );
+  expect(list).toHaveBeenCalledTimes(2);
+  expect(screen.getByRole("button", { name: "Back to upload" })).toBeEnabled();
+  await user.click(screen.getByRole("button", { name: "Back to upload" }));
+  expect(screen.getByLabelText("Choose CSV file")).toBeInTheDocument();
+  await act(async () => refresh.resolve(memberList([member])));
+});
+
+it("preserves confirmed bulk imports and counts when the list refresh fails", async () => {
+  const refresh = deferred<ReturnType<typeof memberList>>();
+  const imported = { ...member, member_id: 2, email: "imported@example.com" };
+  vi.mocked(list)
+    .mockResolvedValueOnce(memberList([member]))
+    .mockReturnValueOnce(refresh.promise);
+  vi.mocked(currentSession).mockResolvedValue({
+    data: { user: { isAdmin: true }, csrfToken: "token" },
+    response,
+  } as never);
+  vi.mocked(bulkCreate).mockResolvedValue({
+    data: {
+      results: [
+        { index: 0, member: imported, error: null },
+        { index: 1, member, error: null },
+        { index: 2, member: null, error: "Duplicate email" },
+      ],
+    },
+    response,
+  } as never);
+  renderPage();
+  const user = userEvent.setup();
+  await screen.findByText(member.email);
+  await user.click(screen.getByRole("button", { name: "Add" }));
+  await user.click(
+    screen.getByRole("button", { name: "Upload Bulk Member(s)" }),
+  );
+  const file = new File([""], "members.csv", { type: "text/csv" });
+  Object.defineProperty(file, "text", {
+    value: async () =>
+      "email,first_name,last_name\nimported@example.com,A,B\nperson@example.com,First,Last\nfailed@example.com,C,D",
+  });
+  await user.upload(screen.getByLabelText("Choose CSV file"), file);
+  await user.click(await screen.findByRole("button", { name: "Add All" }));
+  await screen.findByText("2 added, 1 failed");
+  expect(screen.getByText("2 members")).toBeInTheDocument();
+  await act(async () => refresh.reject(new Error("List refresh failed")));
+  await user.keyboard("{Escape}");
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
+  expect(screen.getByText(imported.email)).toBeInTheDocument();
+  expect(screen.getAllByText(member.email)).toHaveLength(1);
+  expect(screen.getByText("2 members")).toBeInTheDocument();
+  expect(screen.queryByText("failed@example.com")).not.toBeInTheDocument();
+});
+
+it.each(["invalid date", "oversized file"])(
+  "keeps %s on the upload screen without submitting",
+  async (scenario) => {
+    vi.mocked(list).mockResolvedValue(memberList([member]));
+    renderPage();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await user.click(
+      screen.getByRole("button", { name: "Upload Bulk Member(s)" }),
+    );
+    const file = new File(
+      [scenario === "oversized file" ? "x".repeat(1024 * 1024 + 1) : ""],
+      "members.csv",
+      { type: "text/csv" },
+    );
+    Object.defineProperty(file, "text", {
+      value: async () =>
+        "email,first_name,last_name,joined_at\na@b.com,A,B,2026-02-30T12:00:00Z",
+    });
+    await user.upload(screen.getByLabelText("Choose CSV file"), file);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
+      scenario === "invalid date" ? "Row 2: joined_at" : "1 MB or less",
+    );
+    expect(
+      screen.queryByRole("button", { name: "Add All" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Choose CSV file")).toBeInTheDocument();
+    expect(bulkCreate).not.toHaveBeenCalled();
   },
 );

@@ -13,6 +13,7 @@ import {
 } from "@/lib/api/generated/@tanstack/react-query.gen";
 import {
   archive,
+  bulkCreate,
   create,
   currentSession,
   details,
@@ -217,6 +218,60 @@ export const useArchiveMemberMutation = () => {
         );
         return { members, total: members.length };
       });
+      void queryClient.invalidateQueries({ queryKey: membersKey });
+    },
+  });
+};
+
+export const useBulkAddMembersMutation = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    retry: false,
+    mutationFn: async (members: NewMember[]) => {
+      const uncertain =
+        "Could not confirm import results. Refresh before retrying.";
+      const csrfToken = await getAdminCsrfToken("adding");
+      const result = await bulkCreate({
+        body: { members },
+        headers: { "X-CSRF-Token": csrfToken },
+      }).catch(() => {
+        throw new Error(uncertain);
+      });
+      if (!result.data)
+        throw new Error(
+          !result.response || result.response.status >= 500 ?
+            uncertain
+          : (result.error?.error ?? "Unable to import members."),
+        );
+      return result.data;
+    },
+    onSettled: async (data) => {
+      await queryClient.cancelQueries({ queryKey: membersKey });
+      const imported = new Map<number, Member>();
+      for (const result of data?.results ?? []) {
+        if (result.member) imported.set(result.member.member_id, result.member);
+      }
+      if (imported.size) {
+        queryClient.setQueryData<MemberList>(membersKey, (current) => {
+          const existing = current?.members ?? [];
+          const existingIds = new Set(
+            existing.map((member) => member.member_id),
+          );
+          const added = [...imported.values()].filter(
+            (member) => !existingIds.has(member.member_id),
+          );
+          return {
+            ...current,
+            members: [
+              ...added,
+              ...existing.map(
+                (member) => imported.get(member.member_id) ?? member,
+              ),
+            ],
+            total: (current?.total ?? 0) + added.length,
+          };
+        });
+      }
       void queryClient.invalidateQueries({ queryKey: membersKey });
     },
   });

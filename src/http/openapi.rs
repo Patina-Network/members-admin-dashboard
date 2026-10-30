@@ -5,6 +5,7 @@ use utoipa::OpenApi;
     paths(
         super::version::version,
         super::members::create,
+        super::members::bulk_create,
         super::members::list,
         super::auth::login,
         super::auth::callback,
