@@ -5,6 +5,8 @@ use openidconnect::{ClientSecret, url::Url};
 use tonic::transport::{ClientTlsConfig, Endpoint};
 use tracing::info;
 
+use crate::{auth::session::SessionKeys, duration::DurationString};
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub members_admin_service_grpc_host: String,
@@ -30,6 +32,9 @@ impl Config {
             environment = self.environment.as_deref().unwrap_or("N/A"),
             log_filter = %self.log_filter,
             app_origin = %self.auth.origin,
+            session_ttl = %self.auth.session_ttl,
+            login_ttl = %self.auth.login_ttl,
+            azure_http_timeout = ?self.auth.http_timeout,
             "loaded config"
         );
     }
@@ -100,6 +105,13 @@ pub struct AuthConfig {
     pub client_secret: ClientSecret,
     pub origin: Url,
     pub admin_emails: Vec<String>,
+    /// HS256 key for session cookies, from `SESSION_SECRET`.
+    pub session_keys: SessionKeys,
+    /// Session cookie/JWT lifetime, from `SESSION_TTL`.
+    pub session_ttl: time::Duration,
+    /// In-flight Azure sign-in lifetime, from `LOGIN_TTL`.
+    pub login_ttl: time::Duration,
+    pub http_timeout: Duration,
 }
 
 impl AuthConfig {
@@ -161,6 +173,17 @@ impl AuthConfig {
                 }
                 admin_emails
             },
+            session_keys: {
+                let secret = required("SESSION_SECRET")?;
+                ensure!(
+                    secret.len() >= 32,
+                    "SESSION_SECRET must be at least 32 bytes; generate one with `openssl rand -base64 48`"
+                );
+                SessionKeys::new(secret.as_bytes())
+            },
+            session_ttl: browser_ttl("SESSION_TTL", "2h")?,
+            login_ttl: browser_ttl("LOGIN_TTL", "10m")?,
+            http_timeout: duration("AZURE_HTTP_TIMEOUT", "10s")?,
         })
     }
 
@@ -204,6 +227,33 @@ fn required(name: &str) -> anyhow::Result<String> {
         .ok()
         .filter(|v| !v.trim().is_empty())
         .with_context(|| format!("{name} is required"))
+}
+
+fn duration(name: &str, default: &str) -> anyhow::Result<Duration> {
+    let raw = env::var(name)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| default.into());
+    let parsed: Duration = raw
+        .parse::<DurationString>()
+        .with_context(|| format!("{name} must be a duration like `2h`, `90m`, or `1h30m`"))?
+        .into();
+    ensure!(
+        parsed >= Duration::from_secs(1),
+        "{name} must be at least 1s"
+    );
+    Ok(parsed)
+}
+
+const MAX_TTL: Duration = Duration::from_secs(400 * 24 * 60 * 60);
+
+fn browser_ttl(name: &str, default: &str) -> anyhow::Result<time::Duration> {
+    let ttl = duration(name, default)?;
+    ensure!(
+        ttl <= MAX_TTL,
+        "{name} must be at most 400d; browsers cap cookie lifetimes at 400 days"
+    );
+    Ok(time::Duration::try_from(ttl)?)
 }
 
 fn is_uuid(value: &str) -> bool {

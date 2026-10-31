@@ -4,11 +4,18 @@ version = "0.1.0"
 edition = "2024"
 default-run = "members-admin-dashboard"
 
+[lib]
+# src/duration.rs is a verbatim upstream copy whose doctests import the
+# `duration_string` crate; the project has no other doctests.
+doctest = false
+
+[lints.rust]
+# src/duration.rs gates optional code on an upstream `serde` feature.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("serde"))'] }
+
 [dependencies]
 anyhow = "1"
-async-trait = "0.1"
 openidconnect = { version = "4", default-features = false, features = ["reqwest", "rustls-tls", "timing-resistant-secret-traits"] }
-tower-sessions = "0.14"
 time = "0.3"
 serde_json = "1"
 axum = { version = "0.8", features = ["macros"] }
@@ -25,6 +32,8 @@ mime_guess = "2"
 utoipa = { version = "5", features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "9", features = ["axum", "vendored"] }
 members-grpc-service = { version = "=1.0.6-beta.g16bc4a7b", registry = "patina" }
+axum-extra = { version = "0.12", features = ["cookie"] }
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
 
 [dev-dependencies]
 tokio-stream = { version = "0.1", features = ["net"] }

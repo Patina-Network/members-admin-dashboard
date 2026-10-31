@@ -1,48 +1,16 @@
-use anyhow::{Context, bail, ensure};
+use anyhow::Context;
 use openidconnect::{
-    AdditionalClaims, AuthType, AuthorizationCode, Client, ClientId, CsrfToken,
-    EmptyExtraTokenFields, EndpointMaybeSet, EndpointNotSet, EndpointSet, IdTokenFields, IssuerUrl,
-    Nonce, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, StandardErrorResponse,
-    StandardTokenResponse, TokenResponse, core::*, reqwest,
+    AuthType, AuthorizationCode, ClaimsVerificationError, ClientId, CsrfToken, EndpointMaybeSet,
+    EndpointNotSet, EndpointSet, IssuerUrl, Nonce, PkceCodeChallenge, PkceCodeVerifier,
+    RedirectUrl, Scope, TokenResponse, core::*, reqwest,
 };
-use serde::{Deserialize, Serialize};
-use std::{sync::Arc, time::Duration};
 use time::OffsetDateTime;
-use tokio::{sync::Mutex, time::Instant};
 
-use super::session::{LoginAttempt, Principal, User};
+use super::session::{LoginAttempt, Principal};
 use crate::config::AuthConfig;
 
-type AzureIdToken = openidconnect::IdToken<
-    AzureClaims,
-    CoreGenderClaim,
-    CoreJweContentEncryptionAlgorithm,
-    CoreJwsSigningAlgorithm,
->;
-
-type AzureTokenResponse = StandardTokenResponse<
-    IdTokenFields<
-        AzureClaims,
-        EmptyExtraTokenFields,
-        CoreGenderClaim,
-        CoreJweContentEncryptionAlgorithm,
-        CoreJwsSigningAlgorithm,
-    >,
-    CoreTokenType,
->;
-
-type AzureClient = Client<
-    AzureClaims,
-    CoreAuthDisplay,
-    CoreGenderClaim,
-    CoreJweContentEncryptionAlgorithm,
-    CoreJsonWebKey,
-    CoreAuthPrompt,
-    StandardErrorResponse<CoreErrorResponseType>,
-    AzureTokenResponse,
-    CoreTokenIntrospectionResponse,
-    CoreRevocableToken,
-    CoreRevocationErrorResponse,
+/// Endpoint type-state produced by discovery: auth URL set, token/userinfo URLs optional.
+type AzureClient = CoreClient<
     EndpointSet,
     EndpointNotSet,
     EndpointNotSet,
@@ -51,41 +19,20 @@ type AzureClient = Client<
     EndpointMaybeSet,
 >;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct AzureClaims {
-    tid: String,
-}
-impl AdditionalClaims for AzureClaims {}
-
-const DISCOVERY_TTL: Duration = Duration::from_secs(3600);
-const DISCOVERY_RETRY_DELAY: Duration = Duration::from_secs(30);
-const KEY_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
-
-#[derive(Default)]
-struct ClientCache {
-    client: Option<(Arc<AzureClient>, Instant)>,
-    retry_after: Option<Instant>,
-    key_refresh_after: Option<Instant>,
-}
-
+/// `H` is generic only so tests can substitute a mock HTTP client.
 pub struct AzureProvider<H = reqwest::Client> {
     pub config: AuthConfig,
     http: H,
-    cache: Mutex<ClientCache>,
 }
 
 impl AzureProvider {
     pub fn new(config: AuthConfig) -> anyhow::Result<Self> {
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
-            .timeout(std::time::Duration::from_secs(10))
+            .timeout(config.http_timeout)
             .build()?;
 
-        Ok(Self {
-            config,
-            http,
-            cache: Mutex::default(),
-        })
+        Ok(Self { config, http })
     }
 }
 
@@ -94,58 +41,12 @@ where
     H: for<'c> openidconnect::AsyncHttpClient<'c>,
     for<'c> <H as openidconnect::AsyncHttpClient<'c>>::Error: Send + Sync,
 {
-    async fn client(&self) -> anyhow::Result<Arc<AzureClient>> {
-        self.cached_client(None).await
-    }
-
-    // Hold one async lock through discovery so concurrent requests share a refresh.
-    async fn cached_client(
-        &self,
-        stale: Option<&Arc<AzureClient>>,
-    ) -> anyhow::Result<Arc<AzureClient>> {
-        let mut cache = self.cache.lock().await;
-        let now = Instant::now();
-
-        if let Some((client, expires_at)) = &cache.client
-            && *expires_at > now
-            && (stale.is_none() || stale.is_some_and(|old| !Arc::ptr_eq(old, client)))
-        {
-            return Ok(client.clone());
-        }
-
-        if cache.retry_after.is_some_and(|at| at > now) {
-            if stale.is_none()
-                && let Some((client, _)) = &cache.client
-            {
-                return Ok(client.clone());
-            }
-            bail!("Azure discovery temporarily unavailable");
-        }
-
-        if stale.is_some() {
-            ensure!(
-                cache.key_refresh_after.is_none_or(|at| at <= now),
-                "Azure signing key refresh rate limited"
-            );
-            cache.key_refresh_after = Some(now + KEY_REFRESH_INTERVAL);
-        }
-
-        // Also back off after cancellation or failure of a discovery request.
-        cache.retry_after = Some(now + DISCOVERY_RETRY_DELAY);
-        let client = Arc::new(self.discover_client().await?);
-        cache.client = Some((client.clone(), Instant::now() + DISCOVERY_TTL));
-        cache.retry_after = None;
-
-        Ok(client)
-    }
-
-    async fn discover_client(&self) -> anyhow::Result<AzureClient> {
+    async fn client(&self) -> anyhow::Result<AzureClient> {
         let issuer = IssuerUrl::new(format!(
             "https://login.microsoftonline.com/{}/v2.0",
             self.config.tenant_id
         ))?;
         let metadata = CoreProviderMetadata::discover_async(issuer, &self.http).await?;
-
         Ok(AzureClient::from_provider_metadata(
             metadata,
             ClientId::new(self.config.client_id.clone()),
@@ -157,6 +58,7 @@ where
 
     pub async fn begin(&self) -> anyhow::Result<(String, LoginAttempt)> {
         let client = self.client().await?;
+
         let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
         let (url, state, nonce) = client
             .authorize_url(
@@ -175,7 +77,7 @@ where
                 state: state.secret().clone(),
                 nonce: nonce.secret().clone(),
                 verifier: verifier.secret().clone(),
-                expires_at: OffsetDateTime::now_utc().unix_timestamp() + 600,
+                expires_at: (OffsetDateTime::now_utc() + self.config.login_ttl).unix_timestamp(),
             },
         ))
     }
@@ -193,57 +95,30 @@ where
             .context("Azure did not return an ID token")?;
         let nonce = Nonce::new(attempt.nonce);
 
-        match self.validate_id_token(&client, id_token, nonce.clone()) {
-            Err(error)
-                if matches!(
-                    error.downcast_ref::<openidconnect::ClaimsVerificationError>(),
-                    Some(
-                        openidconnect::ClaimsVerificationError::SignatureVerification(
-                            openidconnect::SignatureVerificationError::NoMatchingKey
-                        )
-                    )
-                ) =>
-            {
-                let refreshed = self.cached_client(Some(&client)).await?;
-                self.validate_id_token(&refreshed, id_token, nonce)
-            }
-            result => result,
-        }
+        Ok(self.validate_id_token(&client, id_token, &nonce)?)
     }
 
     fn validate_id_token(
         &self,
         client: &AzureClient,
-        id_token: &AzureIdToken,
-        nonce: Nonce,
-    ) -> anyhow::Result<Principal> {
-        let claims = id_token.claims(&client.id_token_verifier(), &nonce)?;
-        ensure!(
-            claims.additional_claims().tid == self.config.tenant_id,
-            "unexpected Azure tenant"
-        );
+        id_token: &CoreIdToken,
+        nonce: &Nonce,
+    ) -> Result<Principal, ClaimsVerificationError> {
+        let claims = id_token.claims(&client.id_token_verifier(), nonce)?;
 
-        let now = OffsetDateTime::now_utc().unix_timestamp();
-        let expires_at = claims.expiration().timestamp().min(now + 3600);
-        ensure!(expires_at > now, "expired Azure login");
-
-        let is_admin = self.config.allows_email(
-            claims
-                .preferred_username()
-                .map(|username| username.as_str()),
-        );
+        let expires_at = (OffsetDateTime::now_utc() + self.config.session_ttl).unix_timestamp();
 
         Ok(Principal {
-            user: User {
-                id: claims.subject().as_str().to_owned(),
-                name: claims
-                    .name()
-                    .and_then(|n| n.get(None))
-                    .map(|n| n.as_str())
-                    .unwrap_or("Member")
-                    .to_owned(),
-                is_admin,
-            },
+            id: claims.subject().as_str().to_owned(),
+            name: claims
+                .name()
+                .and_then(|n| n.get(None))
+                .map(|n| n.as_str())
+                .unwrap_or("Member")
+                .to_owned(),
+            email: claims
+                .preferred_username()
+                .map(|username| username.as_str().to_owned()),
             csrf_token: CsrfToken::new_random().secret().clone(),
             expires_at,
         })
@@ -255,8 +130,8 @@ mod tests {
     use super::*;
     use chrono::{Duration, Utc};
     use openidconnect::{
-        Audience, ClientSecret, EndUserEmail, EndUserUsername, IdTokenClaims, JsonWebKeySet,
-        PrivateSigningKey, StandardClaims, SubjectIdentifier,
+        Audience, ClientSecret, EndUserEmail, EndUserUsername, JsonWebKeySet, PrivateSigningKey,
+        StandardClaims, SubjectIdentifier,
     };
     use rsa::{RsaPrivateKey, pkcs1::EncodeRsaPrivateKey, rand_core::OsRng};
 
@@ -319,7 +194,6 @@ mod tests {
     ) -> AzureProvider<MockHttp> {
         AzureProvider {
             config,
-            cache: Mutex::default(),
             http: MockHttp {
                 jwks: serde_json::to_value(JsonWebKeySet::new(vec![key.as_verification_key()]))
                     .unwrap(),
@@ -328,167 +202,6 @@ mod tests {
                 discovery_status: 200,
             },
         }
-    }
-
-    fn discovery_count(provider: &AzureProvider<MockHttp>) -> usize {
-        provider
-            .http
-            .requests
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|r| {
-                r.uri()
-                    .path()
-                    .ends_with("/.well-known/openid-configuration")
-            })
-            .count()
-    }
-
-    fn token_response(
-        provider: &AzureProvider<MockHttp>,
-        key: &CoreRsaPrivateSigningKey,
-        nonce: &str,
-    ) {
-        *provider.http.token.lock().unwrap() = (
-            200,
-            serde_json::json!({
-                "access_token": "test", "token_type": "Bearer",
-                "id_token": signed(claims().set_nonce(Some(Nonce::new(nonce.into()))), key).to_string()
-            }),
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn shares_discovery_and_refreshes_expired_clients_with_failure_backoff() {
-        let (original, _, key) = fixture();
-        let mut provider = mock_provider(original.config, &key);
-        let (first, second, third) =
-            tokio::join!(provider.client(), provider.client(), provider.client());
-
-        let first = first.unwrap();
-        assert!(Arc::ptr_eq(&first, &second.unwrap()));
-        assert!(Arc::ptr_eq(&first, &third.unwrap()));
-        assert_eq!(discovery_count(&provider), 1);
-
-        provider.begin().await.unwrap();
-        assert_eq!(discovery_count(&provider), 1);
-
-        tokio::time::advance(DISCOVERY_TTL).await;
-        let second = provider.client().await.unwrap();
-        assert!(!Arc::ptr_eq(&first, &second));
-        assert_eq!(discovery_count(&provider), 2);
-
-        tokio::time::advance(DISCOVERY_TTL).await;
-        provider.http.discovery_status = 503;
-        let (a, b) = tokio::join!(provider.client(), provider.client());
-        let served = [a, b]
-            .into_iter()
-            .filter_map(Result::ok)
-            .collect::<Vec<_>>();
-        assert_eq!(served.len(), 1);
-        assert!(Arc::ptr_eq(&served[0], &second));
-        assert_eq!(discovery_count(&provider), 3);
-
-        provider.http.discovery_status = 200;
-        let during_backoff = provider.client().await.unwrap();
-        assert!(Arc::ptr_eq(&during_backoff, &second));
-        assert!(provider.cached_client(Some(&second)).await.is_err());
-        assert_eq!(discovery_count(&provider), 3);
-
-        tokio::time::advance(DISCOVERY_RETRY_DELAY).await;
-        let refreshed = provider.client().await.unwrap();
-        assert!(!Arc::ptr_eq(&refreshed, &second));
-        assert_eq!(discovery_count(&provider), 4);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn discovery_failure_without_a_client_stays_unavailable() {
-        let (original, _, key) = fixture();
-        let mut provider = mock_provider(original.config, &key);
-
-        provider.http.discovery_status = 503;
-        assert!(provider.client().await.is_err());
-
-        provider.http.discovery_status = 200;
-        assert!(provider.client().await.is_err());
-        assert_eq!(discovery_count(&provider), 1);
-
-        tokio::time::advance(DISCOVERY_RETRY_DELAY).await;
-        assert!(provider.client().await.is_ok());
-        assert_eq!(discovery_count(&provider), 2);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn refreshes_unknown_keys_once_without_redeeming_the_code_again() {
-        let (original, _, key) = fixture();
-        let mut provider = mock_provider(original.config, &key);
-        let (_, attempt) = provider.begin().await.unwrap();
-
-        let rotated = signing_key("rotated-key");
-        provider.http.jwks = serde_json::to_value(JsonWebKeySet::new(vec![
-            rotated.as_verification_key(),
-            key.as_verification_key(),
-        ]))
-        .unwrap();
-        token_response(&provider, &rotated, &attempt.nonce);
-
-        assert!(
-            provider
-                .finish("code".into(), attempt)
-                .await
-                .unwrap()
-                .user
-                .is_admin
-        );
-        assert_eq!(discovery_count(&provider), 2);
-        assert_eq!(
-            provider
-                .http
-                .requests
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|r| r.uri().path() == "/token")
-                .count(),
-            1
-        );
-
-        let (_, attempt) = provider.begin().await.unwrap();
-        token_response(&provider, &rotated, "wrong-nonce");
-        assert!(provider.finish("code".into(), attempt).await.is_err());
-        assert_eq!(discovery_count(&provider), 2);
-
-        let unknown = signing_key("unknown-key");
-
-        for _ in 0..2 {
-            let (_, attempt) = provider.begin().await.unwrap();
-            token_response(&provider, &unknown, &attempt.nonce);
-            assert!(provider.finish("code".into(), attempt).await.is_err());
-        }
-
-        assert_eq!(discovery_count(&provider), 2);
-
-        tokio::time::advance(KEY_REFRESH_INTERVAL).await;
-        let (_, attempt) = provider.begin().await.unwrap();
-        token_response(&provider, &unknown, &attempt.nonce);
-        assert!(provider.finish("code".into(), attempt).await.is_err());
-        assert_eq!(discovery_count(&provider), 3);
-    }
-
-    #[tokio::test]
-    async fn concurrent_key_refreshes_share_one_discovery() {
-        let (original, _, key) = fixture();
-        let provider = mock_provider(original.config, &key);
-
-        let old = provider.client().await.unwrap();
-        let (a, b) = tokio::join!(
-            provider.cached_client(Some(&old)),
-            provider.cached_client(Some(&old))
-        );
-
-        assert!(Arc::ptr_eq(&a.unwrap(), &b.unwrap()));
-        assert_eq!(discovery_count(&provider), 2);
     }
 
     #[tokio::test]
@@ -528,8 +241,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(principal.user.is_admin);
-        assert_eq!(principal.user.id, "user-id");
+        assert!(principal.is_admin(&provider.config));
+        assert_eq!(principal.id, "user-id");
 
         {
             let requests = provider.http.requests.lock().unwrap();
@@ -560,7 +273,6 @@ mod tests {
         }
 
         provider.http.discovery_status = 503;
-        provider.cache.lock().await.client = None;
         assert!(provider.begin().await.is_err());
     }
 
@@ -583,6 +295,10 @@ mod tests {
             client_secret: ClientSecret::new("test".into()),
             origin: "http://localhost:8080".parse().unwrap(),
             admin_emails: vec!["admin@example.com".into()],
+            session_keys: crate::auth::session::test_keys(),
+            session_ttl: time::Duration::hours(2),
+            login_ttl: time::Duration::minutes(10),
+            http_timeout: std::time::Duration::from_secs(10),
         };
 
         let metadata: CoreProviderMetadata = serde_json::from_value(serde_json::json!({
@@ -605,28 +321,21 @@ mod tests {
         (AzureProvider::new(config).unwrap(), client, key)
     }
 
-    fn claims() -> IdTokenClaims<AzureClaims, CoreGenderClaim> {
-        claims_with(AzureClaims { tid: TENANT.into() })
-    }
-
-    fn claims_with(additional: AzureClaims) -> IdTokenClaims<AzureClaims, CoreGenderClaim> {
-        IdTokenClaims::new(
+    fn claims() -> CoreIdTokenClaims {
+        CoreIdTokenClaims::new(
             IssuerUrl::new(format!("https://login.microsoftonline.com/{TENANT}/v2.0")).unwrap(),
             vec![Audience::new(CLIENT.into())],
             Utc::now() + Duration::minutes(30),
             Utc::now(),
             StandardClaims::new(SubjectIdentifier::new("user-id".into())),
-            additional,
+            Default::default(),
         )
         .set_nonce(Some(Nonce::new("nonce".into())))
         .set_preferred_username(Some(EndUserUsername::new("admin@example.com".into())))
     }
 
-    fn signed(
-        claims: IdTokenClaims<AzureClaims, CoreGenderClaim>,
-        key: &CoreRsaPrivateSigningKey,
-    ) -> AzureIdToken {
-        AzureIdToken::new(
+    fn signed(claims: CoreIdTokenClaims, key: &CoreRsaPrivateSigningKey) -> CoreIdToken {
+        CoreIdToken::new(
             claims,
             key,
             CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256,
@@ -651,24 +360,25 @@ mod tests {
             (None, false),
         ] {
             let token = signed(
-                claims_with(AzureClaims { tid: TENANT.into() })
+                claims()
                     .set_preferred_username(preferred_username.map(EndUserUsername::new))
                     .set_email(Some(EndUserEmail::new("admin@example.com".into()))),
                 &key,
             );
             let principal = provider
-                .validate_id_token(&client, &token, Nonce::new("nonce".into()))
+                .validate_id_token(&client, &token, &Nonce::new("nonce".into()))
                 .unwrap();
 
-            assert_eq!(principal.user.id, "user-id");
-            assert_eq!(principal.user.is_admin, expected);
-            assert!(principal.expires_at <= Utc::now().timestamp() + 1800);
+            assert_eq!(principal.id, "user-id");
+            assert_eq!(principal.is_admin(&provider.config), expected);
+            let now = Utc::now().timestamp();
+            assert!((now + 7190..=now + 7200).contains(&principal.expires_at));
             assert!(!principal.csrf_token.is_empty());
         }
     }
 
     #[test]
-    fn rejects_invalid_issuer_audience_nonce_tenant_expiry_and_signature() {
+    fn rejects_invalid_issuer_audience_nonce_expiry_and_signature() {
         let (provider, client, key) = fixture();
 
         for claims in [
@@ -676,13 +386,10 @@ mod tests {
             claims().set_audiences(vec![Audience::new("wrong-client".into())]),
             claims().set_nonce(Some(Nonce::new("wrong-nonce".into()))),
             claims().set_expiration(Utc::now() - Duration::seconds(60)),
-            claims_with(AzureClaims {
-                tid: "other-tenant".into(),
-            }),
         ] {
             assert!(
                 provider
-                    .validate_id_token(&client, &signed(claims, &key), Nonce::new("nonce".into()))
+                    .validate_id_token(&client, &signed(claims, &key), &Nonce::new("nonce".into()))
                     .is_err()
             );
         }
@@ -690,13 +397,13 @@ mod tests {
         let token = signed(claims(), &key).to_string();
         let (data, signature) = token.rsplit_once('.').unwrap();
         let replacement = if signature.starts_with('A') { "B" } else { "A" };
-        let tampered: AzureIdToken = format!("{data}.{replacement}{}", &signature[1..])
+        let tampered: CoreIdToken = format!("{data}.{replacement}{}", &signature[1..])
             .parse()
             .unwrap();
 
         assert!(
             provider
-                .validate_id_token(&client, &tampered, Nonce::new("nonce".into()))
+                .validate_id_token(&client, &tampered, &Nonce::new("nonce".into()))
                 .is_err()
         );
     }
