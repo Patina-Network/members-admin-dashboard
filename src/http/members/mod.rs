@@ -2402,17 +2402,14 @@ mod tests {
     #[tokio::test]
     async fn bulk_http_route_enforces_the_encoded_request_limit() {
         use crate::auth::session::{self, Principal, User};
-        use std::sync::Arc;
+        use axum_extra::extract::CookieJar;
         use tower::ServiceExt;
-        use tower_sessions::{MemoryStore, Session, SessionManagerLayer};
 
         let (state, _server) = member_server(Some(Reply::Success)).await;
-        let store = MemoryStore::default();
-        let session = Session::new(None, Arc::new(store.clone()), None);
-
-        session::establish(
-            &session,
-            Principal {
+        let jar = session::establish(
+            CookieJar::new(),
+            &state.auth.config,
+            &Principal {
                 user: User {
                     id: "test".into(),
                     name: "Admin".into(),
@@ -2422,16 +2419,11 @@ mod tests {
                 expires_at: time::OffsetDateTime::now_utc().unix_timestamp() + 60,
             },
         )
-        .await
         .unwrap();
+        let session_cookie = jar.get("members_session").unwrap();
+        let cookie = format!("members_session={}", session_cookie.value());
 
-        let router = crate::http::app(state).layer(
-            SessionManagerLayer::new(store)
-                .with_name("members_session")
-                .with_secure(false),
-        );
-
-        let cookie = format!("members_session={}", session.id().unwrap());
+        let router = crate::http::app(state);
         let body = serde_json::json!({ "members": [
         { "email": "first@example.com", "first_name": "A", "last_name": "B", "profile": "x".repeat(1024 * 1024 - 200) },
         { "email": "second@example.com", "first_name": "C", "last_name": "D" },

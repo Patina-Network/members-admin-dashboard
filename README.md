@@ -71,12 +71,10 @@ separate feature tickets; the Database table is still a scaffold.
 
 ## Azure authentication
 
-Azure discovery and signing keys are cached in process for one hour and refreshed
-on the next sign-in after expiry. Concurrent requests share one refresh. Failed
-discovery attempts back off for 30 seconds. An unknown signing key triggers one
-refresh and revalidation of the same ID token (without redeeming the code again),
-limited to once every five minutes. Expired metadata or unresolved signing keys
-deny sign-in.
+Each sign-in step (login redirect and callback) fetches Azure's discovery
+metadata and signing keys fresh; nothing is cached, so rotated keys are picked up
+immediately. If discovery fails, that sign-in fails. Calls to Azure time out
+after `AZURE_HTTP_TIMEOUT` (default `10s`).
 
 The Rust backend uses the authorization-code flow with PKCE and OpenID Connect.
 It validates Azure's signature, issuer, audience, expiration, nonce, tenant, and
@@ -104,12 +102,13 @@ Configure the app registration through the platform-infra Azure app workflow:
    `http://localhost:8080/oauth2/callback`.
 2. Set `AZURE_ADMIN_EMAILS` to the authorized users' Microsoft sign-in addresses.
    No Azure app role assignment or new database table is required. Update the
-   environment variable and restart/redeploy the server when changing access;
-   the restart also clears existing in-memory sessions.
+   environment variable and restart/redeploy the server when changing access.
+   Already-issued session cookies keep working until they expire (`SESSION_TTL`,
+   two hours by default); rotate `SESSION_SECRET` to revoke every session immediately.
 3. Create a client secret and configure `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`,
-   `AZURE_CLIENT_SECRET`, and `APP_ORIGIN` on the backend. Use the secret value,
-   not its ID. Register `<APP_ORIGIN>/login` as an allowed Web redirect URI for
-   the post-logout redirect as well. Implicit grant is not needed.
+   `AZURE_CLIENT_SECRET`, `APP_ORIGIN`, and `SESSION_SECRET` on the backend. Use
+   the secret value, not its ID. Register `<APP_ORIGIN>/login` as an allowed Web
+   redirect URI for the post-logout redirect as well. Implicit grant is not needed.
 
 Copy `.env.example` to `.env`, fill in the values, then export them before
 starting the server (the app does not automatically load dotenv files):
@@ -128,14 +127,32 @@ is allowed only for loopback development. Staging/production require HTTPS.
 Azure configuration is required in every environment; missing or invalid
 values fail startup.
 
-Sessions use an opaque HttpOnly, SameSite=Lax cookie, with Secure and the
-`__Host-` prefix on HTTPS. Sessions expire at the earlier of the ID token's
-expiration and one hour after login; allowlist changes require a server restart.
-Login attempts expire after ten minutes, successful login replaces the session
-ID, and logout deletes the server session before continuing to Azure sign-out.
-No refresh tokens are stored. Sessions stay in process memory. A restart clears
-them, and each process keeps its own sessions. Expired records are removed on
-access and swept every minute, including abandoned sign-in attempts.
+Sessions are stateless: the server keeps no session storage. After Azure login
+succeeds, the backend issues an HS256 JWT signed with `SESSION_SECRET` and stores
+it in an HttpOnly, SameSite=Lax cookie, with Secure and the `__Host-` prefix on
+HTTPS. The token carries the user, admin flag, and CSRF token, and expires
+`SESSION_TTL` after login (default `2h`). There is no refresh; users sign in
+again after it expires.
+Restarts and multiple replicas share sessions as long as they use the same
+`SESSION_SECRET`.
+
+An in-flight sign-in (state, nonce, PKCE verifier) uses a separate signed
+cookie (`members_login`) that expires after `LOGIN_TTL` (default `10m`). The
+browser cookie is deleted on the first callback, but copied tokens remain valid
+until expiry because the server stores no login-attempt state. Session and login
+tokens have different audiences, so neither one is accepted in place of the
+other. Logout deletes the
+cookie before continuing to Azure sign-out. Because nothing is stored on the
+server, a copied token stays valid until it expires. Rotating `SESSION_SECRET`
+is the only way to revoke all sessions at once. No Azure tokens are stored.
+
+`SESSION_TTL`, `LOGIN_TTL`, and `AZURE_HTTP_TIMEOUT` use the `duration-string`
+format: one or more `<number><unit>` pairs with units `ns`, `us`, `ms`, `s`, `m`,
+`h`, `d`, `w`, `y`
+(for example `2h`, `90m`, `1h 30m`). Values must be at least `1s`; `SESSION_TTL`
+and `LOGIN_TTL` must be at most `400d`, the browser cap on cookie lifetimes.
+Invalid values fail startup. The parser in `src/duration.rs` is a verbatim copy of the
+upstream `duration-string` crate.
 
 `GET /api/auth/session` returns the current user and CSRF token. Write requests
 must send that token as `X-CSRF-Token`; browser Origin headers must match
@@ -149,12 +166,13 @@ handlers. Only the four exact auth endpoints, OpenAPI, and Swagger UI are public
 Register new member handlers under the existing API router to inherit this
 protection; add their explicit response enums and OpenAPI documentation as usual.
 
-Local tests cover token validation, session expiry/revocation, callback and
-CSRF checks, and frontend access states. HTTP integration tests exercise the
-application router with session cookies, including anonymous/non-admin denial,
-admin access, write-request CSRF checks, expired sessions, and replaying a cookie
-after logout. Token-validation tests generate temporary RSA signing keys in
-memory; no private-key fixture is stored in the repository or written to disk.
+Local tests cover token validation, session signing/expiry/forgery, cross-use of
+login and session tokens, callback and CSRF checks, and frontend access states.
+HTTP integration tests exercise the application router with signed session
+cookies, including anonymous/non-admin denial, admin access, write-request CSRF
+checks, expired sessions, and logout cookie deletion. Token-validation tests
+generate temporary RSA signing keys in memory; no private-key fixture is stored
+in the repository or written to disk.
 A real Azure sign-in/logout check needs the configured app registration, an
 assigned admin account, and a non-admin account.
 
@@ -226,6 +244,10 @@ published member API; no member RPCs are invoked by the setup scaffold.
 | `AZURE_CLIENT_SECRET` | required | Backend-only client secret |
 | `AZURE_ADMIN_EMAILS` | Empty (deny all) | Comma-separated Microsoft sign-in emails allowed admin access |
 | `APP_ORIGIN` | required | Public application origin, including port in development |
+| `SESSION_SECRET` | required | HS256 key (≥32 bytes) for session cookies; rotate to revoke all sessions |
+| `SESSION_TTL` | `2h` | Session cookie/JWT lifetime (`duration-string` format, 1s–400d) |
+| `LOGIN_TTL` | `10m` | In-flight Azure sign-in lifetime (`duration-string` format, 1s–400d) |
+| `AZURE_HTTP_TIMEOUT` | `10s` | Timeout for Azure discovery and token requests (`duration-string` format, ≥1s) |
 | `ENABLE_DOCUMENTATION` | `true` | Serve Swagger UI and OpenAPI routes |
 | `HTTP_PORT` | `8080` | HTTP port; binds `0.0.0.0` |
 | `VERSION` | unset | `/version` returns this, or `N/A` |

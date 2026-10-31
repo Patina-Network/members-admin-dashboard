@@ -4,7 +4,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Redirect, Response},
 };
-use tower_sessions::Session;
+use axum_extra::extract::CookieJar;
 
 use super::response::AuthError;
 use crate::{
@@ -57,15 +57,13 @@ fn is_public_api(path: &str) -> bool {
     ) || path.starts_with("/api/swagger-ui/")
 }
 
-pub async fn authorize(
-    session: &Session,
+fn authorize(
+    jar: &CookieJar,
     method: &Method,
     headers: &HeaderMap,
     config: &AuthConfig,
 ) -> Result<Principal, AuthError> {
-    let principal = session::principal(session)
-        .await?
-        .ok_or_else(AuthError::unauthorized)?;
+    let principal = session::principal(jar, config).ok_or_else(AuthError::unauthorized)?;
 
     if !principal.user.is_admin {
         return Err(AuthError::forbidden());
@@ -80,7 +78,7 @@ pub async fn authorize(
 
 pub async fn protect(
     State(state): State<AppState>,
-    session: Session,
+    jar: CookieJar,
     mut request: Request,
     next: Next,
 ) -> Response {
@@ -91,13 +89,11 @@ pub async fn protect(
 
     let mut response = if database || (api && !is_public_api(path)) {
         match authorize(
-            &session,
+            &jar,
             request.method(),
             request.headers(),
             &state.auth.config,
-        )
-        .await
-        {
+        ) {
             Ok(principal) => {
                 request.extensions_mut().insert(principal);
                 next.run(request).await
@@ -129,22 +125,21 @@ pub async fn protect(
 mod tests {
     use super::*;
     use crate::{
-        auth::session::{PRINCIPAL_KEY, User},
+        auth::session::{User, round_trip},
         http::state::test_state,
     };
     use axum::http::StatusCode;
-    use std::sync::Arc;
     use time::OffsetDateTime;
-    use tower_sessions::MemoryStore;
 
     #[tokio::test]
     async fn enforces_login_admin_and_csrf() {
-        let session = Session::new(None, Arc::new(MemoryStore::default()), None);
         let config = test_state().config.auth;
         let mut headers = HeaderMap::new();
+        let jar_for = |principal: &Principal| {
+            round_trip(&session::establish(CookieJar::new(), &config, principal).unwrap())
+        };
 
-        let denied = authorize(&session, &Method::GET, &headers, &config)
-            .await
+        let denied = authorize(&CookieJar::new(), &Method::GET, &headers, &config)
             .err()
             .unwrap();
         assert_eq!(denied.into_response().status(), StatusCode::UNAUTHORIZED);
@@ -158,40 +153,31 @@ mod tests {
             csrf_token: "token".into(),
             expires_at: OffsetDateTime::now_utc().unix_timestamp() + 60,
         };
-        session.insert(PRINCIPAL_KEY, &principal).await.unwrap();
         assert!(matches!(
-            authorize(&session, &Method::GET, &headers, &config).await,
+            authorize(&jar_for(&principal), &Method::GET, &headers, &config),
             Err(AuthError::Forbidden(_))
         ));
 
         principal.user.is_admin = true;
-        session.insert(PRINCIPAL_KEY, &principal).await.unwrap();
-        assert!(
-            authorize(&session, &Method::GET, &headers, &config)
-                .await
-                .is_ok()
-        );
+        let jar = jar_for(&principal);
+        assert!(authorize(&jar, &Method::GET, &headers, &config).is_ok());
 
         for method in [Method::POST, Method::PUT, Method::PATCH, Method::DELETE] {
             assert!(matches!(
-                authorize(&session, &method, &headers, &config).await,
+                authorize(&jar, &method, &headers, &config),
                 Err(AuthError::Forbidden(_))
             ));
         }
 
         headers.insert("x-csrf-token", HeaderValue::from_static("token"));
-        assert!(
-            authorize(&session, &Method::POST, &headers, &config)
-                .await
-                .is_ok()
-        );
+        assert!(authorize(&jar, &Method::POST, &headers, &config).is_ok());
 
         headers.insert(
             header::ORIGIN,
             HeaderValue::from_static("https://attacker.example"),
         );
         assert!(matches!(
-            authorize(&session, &Method::POST, &headers, &config).await,
+            authorize(&jar, &Method::POST, &headers, &config),
             Err(AuthError::Forbidden(_))
         ));
     }

@@ -5,33 +5,28 @@ use axum::{
     extract::{Query, State, rejection::QueryRejection},
     http::HeaderMap,
 };
+use axum_extra::extract::CookieJar;
 use serde::Deserialize;
 use time::OffsetDateTime;
-use tower_sessions::Session;
 
-use crate::{
-    auth::session::{self, LOGIN_KEY, LoginAttempt},
-    http::state::AppState,
-};
+use crate::{auth::session, config::AuthConfig, http::state::AppState};
 use response::{AuthError, FlowResponse, LogoutBody, LogoutResponse, SessionBody, SessionResponse};
 
 #[utoipa::path(get, path = "/api/auth/login", responses(FlowResponse, AuthError))]
 pub async fn login(
     State(state): State<AppState>,
-    session: Session,
-) -> Result<FlowResponse, AuthError> {
+    jar: CookieJar,
+) -> Result<(CookieJar, FlowResponse), AuthError> {
     let (url, attempt) = match state.auth.begin().await {
         Ok(attempt) => attempt,
         Err(_) => {
             tracing::warn!("Azure authorization discovery failed");
-            return Ok(FlowResponse::redirect("/login?error=unavailable"));
+            return Ok((jar, FlowResponse::redirect("/login?error=unavailable")));
         }
     };
 
-    session.insert(LOGIN_KEY, attempt).await?;
-    session.save().await?;
-
-    Ok(FlowResponse::redirect(url))
+    let jar = session::start_login(jar, &state.auth.config, &attempt)?;
+    Ok((jar, FlowResponse::redirect(url)))
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
@@ -49,13 +44,13 @@ pub struct CallbackQuery {
 )]
 pub async fn callback(
     State(state): State<AppState>,
-    session: Session,
+    jar: CookieJar,
     query: Result<Query<CallbackQuery>, QueryRejection>,
-) -> Result<FlowResponse, AuthError> {
+) -> Result<(CookieJar, FlowResponse), AuthError> {
     let Query(query) = query.map_err(|_| AuthError::invalid())?;
+    let config = &state.auth.config;
 
-    let attempt: Option<LoginAttempt> = session.remove(LOGIN_KEY).await?;
-    session.save().await?;
+    let (jar, attempt) = session::take_login(jar, config);
 
     let Some(attempt) = attempt.filter(|a| {
         query
@@ -63,84 +58,86 @@ pub async fn callback(
             .as_deref()
             .is_some_and(|s| a.valid(s, OffsetDateTime::now_utc().unix_timestamp()))
     }) else {
-        return Ok(FlowResponse::redirect("/login?error=invalid_callback"));
+        return Ok((jar, FlowResponse::redirect("/login?error=invalid_callback")));
     };
 
     if query.error.is_some() {
-        return Ok(FlowResponse::redirect("/login?error=cancelled"));
+        return Ok((jar, FlowResponse::redirect("/login?error=cancelled")));
     }
 
     let Some(code) = query.code.filter(|s| !s.is_empty()) else {
-        return Ok(FlowResponse::redirect("/login?error=invalid_callback"));
+        return Ok((jar, FlowResponse::redirect("/login?error=invalid_callback")));
     };
 
     let principal = match state.auth.finish(code, attempt).await {
         Ok(principal) => principal,
         Err(_) => {
             tracing::warn!("Azure token exchange or validation failed");
-            return Ok(FlowResponse::redirect("/login?error=login_failed"));
+            return Ok((jar, FlowResponse::redirect("/login?error=login_failed")));
         }
     };
 
-    complete_login(&session, principal).await
+    complete_login(jar, config, principal)
 }
 
-async fn complete_login(
-    session: &Session,
-    principal: crate::auth::session::Principal,
-) -> Result<FlowResponse, AuthError> {
+fn complete_login(
+    jar: CookieJar,
+    config: &AuthConfig,
+    principal: session::Principal,
+) -> Result<(CookieJar, FlowResponse), AuthError> {
     if !principal.user.is_admin {
-        session.flush().await?;
-        return Ok(FlowResponse::redirect("/login?error=forbidden"));
+        return Ok((
+            session::clear(jar, config),
+            FlowResponse::redirect("/login?error=forbidden"),
+        ));
     }
 
-    session::establish(session, principal).await?;
-    Ok(FlowResponse::redirect("/database"))
+    let jar = session::establish(jar, config, &principal)?;
+    Ok((jar, FlowResponse::redirect("/database")))
 }
 
-#[utoipa::path(get, path = "/api/auth/session", responses(SessionResponse, AuthError))]
-pub async fn current_session(session: Session) -> Result<SessionResponse, AuthError> {
-    let principal = session::principal(&session).await?;
-    Ok(SessionResponse::Success(SessionBody {
+#[utoipa::path(get, path = "/api/auth/session", responses(SessionResponse))]
+pub async fn current_session(State(state): State<AppState>, jar: CookieJar) -> SessionResponse {
+    let principal = session::principal(&jar, &state.auth.config);
+    SessionResponse::Success(SessionBody {
         user: principal.as_ref().map(|p| p.user.clone()),
         csrf_token: principal.map(|p| p.csrf_token),
-    }))
+    })
 }
 
 #[utoipa::path(post, path = "/api/auth/logout", params(("X-CSRF-Token" = String, Header, description = "CSRF token from the current session")), responses(LogoutResponse, AuthError))]
 pub async fn logout(
     State(state): State<AppState>,
-    session: Session,
+    jar: CookieJar,
     headers: HeaderMap,
-) -> Result<LogoutResponse, AuthError> {
-    guard::check_origin(&headers, &state.auth.config)?;
+) -> Result<(CookieJar, LogoutResponse), AuthError> {
+    let config = &state.auth.config;
+    guard::check_origin(&headers, config)?;
 
-    let principal = session::principal(&session).await?;
-    if let Some(principal) = principal {
-        guard::check_csrf(&principal, &headers, &state.auth.config)?;
+    if let Some(principal) = session::principal(&jar, config) {
+        guard::check_csrf(&principal, &headers, config)?;
     }
 
-    session.flush().await?;
-
-    Ok(LogoutResponse::Success(LogoutBody {
-        redirect_url: state.auth.config.logout_url(),
-    }))
+    Ok((
+        session::clear(jar, config),
+        LogoutResponse::Success(LogoutBody {
+            redirect_url: config.logout_url(),
+        }),
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        auth::session::{Principal, User},
+        auth::session::{LoginAttempt, Principal, User, round_trip},
         http::state::test_state,
     };
     use axum::{
-        http::{HeaderValue, StatusCode},
+        http::{HeaderValue, StatusCode, header},
         response::IntoResponse,
     };
     use http_body_util::BodyExt;
-    use std::sync::Arc;
-    use tower_sessions::MemoryStore;
 
     fn principal() -> Principal {
         Principal {
@@ -154,36 +151,44 @@ mod tests {
         }
     }
 
+    fn login_jar(config: &AuthConfig) -> CookieJar {
+        let attempt = LoginAttempt {
+            state: "expected".into(),
+            nonce: "nonce".into(),
+            verifier: "verifier".into(),
+            expires_at: OffsetDateTime::now_utc().unix_timestamp() + 60,
+        };
+        round_trip(&session::start_login(CookieJar::new(), config, &attempt).unwrap())
+    }
+
+    fn query(code: Option<&str>, state: Option<&str>, error: Option<&str>) -> CallbackQuery {
+        CallbackQuery {
+            code: code.map(str::to_owned),
+            state: state.map(str::to_owned),
+            error: error.map(str::to_owned),
+        }
+    }
+
     #[tokio::test]
     async fn login_only_establishes_sessions_for_allowlisted_accounts() {
-        let store = Arc::new(MemoryStore::default());
-        let session = Session::new(None, store.clone(), None);
+        let config = test_state().config.auth;
 
-        let response = complete_login(&session, principal())
-            .await
-            .unwrap_or_else(|_| panic!("login failed"))
-            .into_response();
+        let (jar, response) = complete_login(CookieJar::new(), &config, principal())
+            .unwrap_or_else(|_| panic!("login failed"));
+        assert_eq!(response.into_response().headers()["location"], "/database");
+        let jar = round_trip(&jar);
+        assert!(session::principal(&jar, &config).is_some());
 
-        assert_eq!(response.headers()["location"], "/database");
-        assert!(session::principal(&session).await.unwrap().is_some());
-
-        let old_id = session.id();
         let mut denied = principal();
         denied.user.is_admin = false;
 
-        let response = complete_login(&session, denied)
-            .await
-            .unwrap_or_else(|_| panic!("login failed"))
-            .into_response();
-
-        assert_eq!(response.headers()["location"], "/login?error=forbidden");
-        assert!(session::principal(&session).await.unwrap().is_none());
-        assert!(
-            session::principal(&Session::new(old_id, store, None))
-                .await
-                .unwrap()
-                .is_none()
+        let (jar, response) =
+            complete_login(jar, &config, denied).unwrap_or_else(|_| panic!("login failed"));
+        assert_eq!(
+            response.into_response().headers()["location"],
+            "/login?error=forbidden"
         );
+        assert!(session::principal(&round_trip(&jar), &config).is_none());
     }
 
     #[tokio::test]
@@ -194,48 +199,26 @@ mod tests {
             (None, Some("code"), true),
             (Some("expected"), Some("code"), false),
         ] {
-            let session = Session::new(None, Arc::new(MemoryStore::default()), None);
+            let state = test_state();
+            let config = state.auth.config.clone();
+            let jar = if has_attempt {
+                login_jar(&config)
+            } else {
+                CookieJar::new()
+            };
 
-            if has_attempt {
-                session
-                    .insert(
-                        LOGIN_KEY,
-                        LoginAttempt {
-                            state: "expected".into(),
-                            nonce: "nonce".into(),
-                            verifier: "verifier".into(),
-                            expires_at: OffsetDateTime::now_utc().unix_timestamp() + 60,
-                        },
-                    )
+            let (jar, response) =
+                callback(State(state), jar, Ok(Query(query(code, state_value, None))))
                     .await
-                    .unwrap();
-            }
-
-            let response = callback(
-                State(test_state()),
-                session.clone(),
-                Ok(Query(CallbackQuery {
-                    code: code.map(str::to_owned),
-                    state: state_value.map(str::to_owned),
-                    error: None,
-                })),
-            )
-            .await
-            .unwrap_or_else(|_| panic!("callback failed"))
-            .into_response();
+                    .unwrap_or_else(|_| panic!("callback failed"));
 
             assert_eq!(
-                response.headers()["location"],
+                response.into_response().headers()["location"],
                 "/login?error=invalid_callback"
             );
-            assert!(session::principal(&session).await.unwrap().is_none());
-            assert!(
-                session
-                    .get::<LoginAttempt>(LOGIN_KEY)
-                    .await
-                    .unwrap()
-                    .is_none()
-            );
+            let jar = round_trip(&jar);
+            assert!(session::principal(&jar, &config).is_none());
+            assert!(session::take_login(jar, &config).1.is_none());
         }
     }
 
@@ -251,8 +234,7 @@ mod tests {
         let query = Query::<CallbackQuery>::from_request_parts(&mut parts, &()).await;
         assert!(query.is_err());
 
-        let session = Session::new(None, Arc::new(MemoryStore::default()), None);
-        let response = callback(State(test_state()), session, query)
+        let response = callback(State(test_state()), CookieJar::new(), query)
             .await
             .err()
             .unwrap()
@@ -263,11 +245,8 @@ mod tests {
 
     #[tokio::test]
     async fn reports_signed_out_session() {
-        let session = Session::new(None, Arc::new(MemoryStore::default()), None);
-
-        let response = current_session(session)
+        let response = current_session(State(test_state()), CookieJar::new())
             .await
-            .unwrap_or_else(|_| panic!("session failed"))
             .into_response();
 
         let body = response.into_body().collect().await.unwrap().to_bytes();
@@ -278,108 +257,80 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn logout_requires_csrf_then_revokes_the_session() {
-        let store = Arc::new(MemoryStore::default());
-        let session = Session::new(None, store.clone(), None);
-        session::establish(&session, principal()).await.unwrap();
-        let id = session.id();
+    async fn logout_requires_csrf_then_clears_the_session_cookie() {
+        let state = test_state();
+        let jar = round_trip(
+            &session::establish(CookieJar::new(), &state.auth.config, &principal()).unwrap(),
+        );
 
         assert!(matches!(
-            logout(State(test_state()), session.clone(), HeaderMap::new()).await,
+            logout(State(state.clone()), jar.clone(), HeaderMap::new()).await,
             Err(AuthError::Forbidden(_))
         ));
-        assert!(session::principal(&session).await.unwrap().is_some());
 
         let mut headers = HeaderMap::new();
         headers.insert("x-csrf-token", HeaderValue::from_static("csrf"));
         headers.insert("origin", HeaderValue::from_static("http://localhost:8080"));
 
-        let response = logout(State(test_state()), session.clone(), headers)
+        let response = logout(State(state), jar, headers)
             .await
             .unwrap_or_else(|_| panic!("logout failed"))
             .into_response();
 
         assert_eq!(response.status(), StatusCode::OK);
+        let cookie = response.headers()[header::SET_COOKIE].to_str().unwrap();
+        assert!(cookie.starts_with("members_session=;"));
+        assert!(cookie.contains("Max-Age=0"));
+
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(body["redirectUrl"].as_str().unwrap().starts_with("https://login.microsoftonline.com/11111111-1111-1111-1111-111111111111/oauth2/v2.0/logout?"));
-        assert!(
-            session::principal(&Session::new(id, store, None))
-                .await
-                .unwrap()
-                .is_none()
-        );
     }
 
     #[tokio::test]
     async fn callback_rejects_invalid_state_and_consumes_the_login_attempt() {
-        let session = Session::new(None, Arc::new(MemoryStore::default()), None);
-        session
-            .insert(
-                LOGIN_KEY,
-                LoginAttempt {
-                    state: "expected".into(),
-                    nonce: "nonce".into(),
-                    verifier: "verifier".into(),
-                    expires_at: OffsetDateTime::now_utc().unix_timestamp() + 60,
-                },
-            )
-            .await
-            .unwrap();
+        let state = test_state();
+        let config = state.auth.config.clone();
 
-        let query = CallbackQuery {
-            code: Some("code".into()),
-            state: Some("wrong".into()),
-            error: None,
-        };
+        let (jar, response) = callback(
+            State(state),
+            login_jar(&config),
+            Ok(Query(query(Some("code"), Some("wrong"), None))),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("callback failed"));
 
-        let response = callback(State(test_state()), session.clone(), Ok(Query(query)))
-            .await
-            .unwrap_or_else(|_| panic!("callback failed"))
-            .into_response();
-
+        let response = (jar.clone(), response).into_response();
         assert_eq!(
             response.headers()["location"],
             "/login?error=invalid_callback"
         );
-        assert!(
-            session
-                .get::<LoginAttempt>(LOGIN_KEY)
-                .await
-                .unwrap()
-                .is_none()
-        );
-        assert!(session::principal(&session).await.unwrap().is_none());
+        let cookie = response.headers()[header::SET_COOKIE].to_str().unwrap();
+        assert!(cookie.starts_with("members_login=;"));
+        assert!(cookie.contains("Max-Age=0"));
+
+        let jar = round_trip(&jar);
+        assert!(session::principal(&jar, &config).is_none());
+        assert!(session::take_login(jar, &config).1.is_none());
     }
 
     #[tokio::test]
     async fn cancelled_login_returns_a_safe_message_without_creating_a_session() {
-        let session = Session::new(None, Arc::new(MemoryStore::default()), None);
-        session
-            .insert(
-                LOGIN_KEY,
-                LoginAttempt {
-                    state: "expected".into(),
-                    nonce: "nonce".into(),
-                    verifier: "verifier".into(),
-                    expires_at: OffsetDateTime::now_utc().unix_timestamp() + 60,
-                },
-            )
-            .await
-            .unwrap();
+        let state = test_state();
+        let config = state.auth.config.clone();
 
-        let query = CallbackQuery {
-            code: None,
-            state: Some("expected".into()),
-            error: Some("access_denied".into()),
-        };
+        let (jar, response) = callback(
+            State(state),
+            login_jar(&config),
+            Ok(Query(query(None, Some("expected"), Some("access_denied")))),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("callback failed"));
 
-        let response = callback(State(test_state()), session.clone(), Ok(Query(query)))
-            .await
-            .unwrap_or_else(|_| panic!("callback failed"))
-            .into_response();
-
-        assert_eq!(response.headers()["location"], "/login?error=cancelled");
-        assert!(session::principal(&session).await.unwrap().is_none());
+        assert_eq!(
+            response.into_response().headers()["location"],
+            "/login?error=cancelled"
+        );
+        assert!(session::principal(&round_trip(&jar), &config).is_none());
     }
 }

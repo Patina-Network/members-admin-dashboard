@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use members_admin_dashboard::{
-    auth::{provider::AzureProvider, session::with_sessions},
+    auth::provider::AzureProvider,
     config::Config,
     http::{app, state::AppState},
 };
@@ -59,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!(address=%listener.local_addr()?, "HTTP server started");
 
-    let router = with_sessions(app(state), &config.auth);
+    let router = app(state);
 
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown())

@@ -40,9 +40,9 @@ impl AuthError {
     }
 }
 
-impl From<tower_sessions::session::Error> for AuthError {
-    fn from(_: tower_sessions::session::Error) -> Self {
-        tracing::error!("session operation failed");
+impl From<jsonwebtoken::errors::Error> for AuthError {
+    fn from(_: jsonwebtoken::errors::Error) -> Self {
+        tracing::error!("session token signing failed");
         Self::Internal(ErrorBody {
             error: "session unavailable",
         })
@@ -159,8 +159,8 @@ mod tests {
 
     #[tokio::test]
     async fn auth_errors_use_safe_json_and_correct_http_statuses() {
-        let internal = AuthError::from(tower_sessions::session::Error::Store(
-            tower_sessions::session_store::Error::Backend("private backend details".into()),
+        let internal = AuthError::from(jsonwebtoken::errors::Error::from(
+            jsonwebtoken::errors::ErrorKind::InvalidToken,
         ));
 
         for (error, status, message) in [

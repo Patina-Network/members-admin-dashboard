@@ -28,6 +28,10 @@ pub(crate) fn test_state() -> AppState {
         client_secret: openidconnect::ClientSecret::new("test-secret".into()),
         origin: "http://localhost:8080".parse().unwrap(),
         admin_emails: vec!["admin@example.com".into()],
+        session_keys: crate::auth::session::test_keys(),
+        session_ttl: time::Duration::hours(2),
+        login_ttl: time::Duration::minutes(10),
+        http_timeout: std::time::Duration::from_secs(10),
     };
 
     AppState {
