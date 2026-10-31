@@ -6,7 +6,7 @@ use openidconnect::{
 };
 use time::OffsetDateTime;
 
-use super::session::{LoginAttempt, Principal, User};
+use super::session::{LoginAttempt, Principal};
 use crate::config::AuthConfig;
 
 /// Endpoint type-state produced by discovery: auth URL set, token/userinfo URLs optional.
@@ -108,23 +108,17 @@ where
 
         let expires_at = (OffsetDateTime::now_utc() + self.config.session_ttl).unix_timestamp();
 
-        let is_admin = self.config.allows_email(
-            claims
-                .preferred_username()
-                .map(|username| username.as_str()),
-        );
-
         Ok(Principal {
-            user: User {
-                id: claims.subject().as_str().to_owned(),
-                name: claims
-                    .name()
-                    .and_then(|n| n.get(None))
-                    .map(|n| n.as_str())
-                    .unwrap_or("Member")
-                    .to_owned(),
-                is_admin,
-            },
+            id: claims.subject().as_str().to_owned(),
+            name: claims
+                .name()
+                .and_then(|n| n.get(None))
+                .map(|n| n.as_str())
+                .unwrap_or("Member")
+                .to_owned(),
+            email: claims
+                .preferred_username()
+                .map(|username| username.as_str().to_owned()),
             csrf_token: CsrfToken::new_random().secret().clone(),
             expires_at,
         })
@@ -247,8 +241,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(principal.user.is_admin);
-        assert_eq!(principal.user.id, "user-id");
+        assert!(principal.is_admin(&provider.config));
+        assert_eq!(principal.id, "user-id");
 
         {
             let requests = provider.http.requests.lock().unwrap();
@@ -375,8 +369,8 @@ mod tests {
                 .validate_id_token(&client, &token, &Nonce::new("nonce".into()))
                 .unwrap();
 
-            assert_eq!(principal.user.id, "user-id");
-            assert_eq!(principal.user.is_admin, expected);
+            assert_eq!(principal.id, "user-id");
+            assert_eq!(principal.is_admin(&provider.config), expected);
             let now = Utc::now().timestamp();
             assert!((now + 7190..=now + 7200).contains(&principal.expires_at));
             assert!(!principal.csrf_token.is_empty());

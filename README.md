@@ -84,7 +84,9 @@ sign-in email addresses. Entries are trimmed and matched case-insensitively
 against the validated ID token's standard `preferred_username` claim. Matching
 is exact: no domain-wide access, wildcards, contact-email fallback, or Azure app
 roles. Missing/empty configuration denies everyone. An account outside the list
-or without a sign-in username does not receive a signed-in session.
+or without a sign-in username does not receive a signed-in session. Admin access
+is re-checked against the loaded allowlist on every protected request, not only
+at login.
 
 For example: `AZURE_ADMIN_EMAILS=alice@example.com,bob@example.com`.
 Use each person's Microsoft sign-in address, which can differ from their contact
@@ -103,8 +105,9 @@ Configure the app registration through the platform-infra Azure app workflow:
 2. Set `AZURE_ADMIN_EMAILS` to the authorized users' Microsoft sign-in addresses.
    No Azure app role assignment or new database table is required. Update the
    environment variable and restart/redeploy the server when changing access.
-   Already-issued session cookies keep working until they expire (`SESSION_TTL`,
-   two hours by default); rotate `SESSION_SECRET` to revoke every session immediately.
+   Sessions store the sign-in email, not an admin flag, so removing an address
+   revokes that person's existing sessions as soon as the new configuration is
+   live; rotate `SESSION_SECRET` to revoke every session immediately.
 3. Create a client secret and configure `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`,
    `AZURE_CLIENT_SECRET`, `APP_ORIGIN`, and `SESSION_SECRET` on the backend. Use
    the secret value, not its ID. Register `<APP_ORIGIN>/login` as an allowed Web
@@ -130,9 +133,10 @@ values fail startup.
 Sessions are stateless: the server keeps no session storage. After Azure login
 succeeds, the backend issues an HS256 JWT signed with `SESSION_SECRET` and stores
 it in an HttpOnly, SameSite=Lax cookie, with Secure and the `__Host-` prefix on
-HTTPS. The token carries the user, admin flag, and CSRF token, and expires
-`SESSION_TTL` after login (default `2h`). There is no refresh; users sign in
-again after it expires.
+HTTPS. The token carries the user ID, name, sign-in email, and CSRF token, and
+expires `SESSION_TTL` after login (default `2h`). Admin status is derived from
+the email and the current `AZURE_ADMIN_EMAILS` on each request. There is no
+refresh; users sign in again after it expires.
 Restarts and multiple replicas share sessions as long as they use the same
 `SESSION_SECRET`.
 

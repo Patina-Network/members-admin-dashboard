@@ -65,7 +65,7 @@ fn authorize(
 ) -> Result<Principal, AuthError> {
     let principal = session::principal(jar, config).ok_or_else(AuthError::unauthorized)?;
 
-    if !principal.user.is_admin {
+    if !principal.is_admin(config) {
         return Err(AuthError::forbidden());
     }
 
@@ -124,10 +124,7 @@ pub async fn protect(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        auth::session::{User, round_trip},
-        http::state::test_state,
-    };
+    use crate::{auth::session::round_trip, http::state::test_state};
     use axum::http::StatusCode;
     use time::OffsetDateTime;
 
@@ -145,11 +142,9 @@ mod tests {
         assert_eq!(denied.into_response().status(), StatusCode::UNAUTHORIZED);
 
         let mut principal = Principal {
-            user: User {
-                id: "test".into(),
-                name: "Test".into(),
-                is_admin: false,
-            },
+            id: "test".into(),
+            name: "Test".into(),
+            email: Some("other@example.com".into()),
             csrf_token: "token".into(),
             expires_at: OffsetDateTime::now_utc().unix_timestamp() + 60,
         };
@@ -158,7 +153,17 @@ mod tests {
             Err(AuthError::Forbidden(_))
         ));
 
-        principal.user.is_admin = true;
+        principal.email = Some("admin@example.com".into());
+        let jar = jar_for(&principal);
+        assert!(authorize(&jar, &Method::GET, &headers, &config).is_ok());
+
+        // Removing the email from the allowlist revokes an already-issued session.
+        let mut revoked = config.clone();
+        revoked.admin_emails.clear();
+        assert!(matches!(
+            authorize(&jar, &Method::GET, &headers, &revoked),
+            Err(AuthError::Forbidden(_))
+        ));
         let jar = jar_for(&principal);
         assert!(authorize(&jar, &Method::GET, &headers, &config).is_ok());
 

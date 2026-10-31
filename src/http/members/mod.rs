@@ -2401,7 +2401,7 @@ mod tests {
 
     #[tokio::test]
     async fn bulk_http_route_enforces_the_encoded_request_limit() {
-        use crate::auth::session::{self, Principal, User};
+        use crate::auth::session::{self, Principal};
         use axum_extra::extract::CookieJar;
         use tower::ServiceExt;
 
@@ -2410,11 +2410,9 @@ mod tests {
             CookieJar::new(),
             &state.auth.config,
             &Principal {
-                user: User {
-                    id: "test".into(),
-                    name: "Admin".into(),
-                    is_admin: true,
-                },
+                id: "test".into(),
+                name: "Admin".into(),
+                email: Some("admin@example.com".into()),
                 csrf_token: "csrf".into(),
                 expires_at: time::OffsetDateTime::now_utc().unix_timestamp() + 60,
             },

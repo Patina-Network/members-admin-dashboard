@@ -24,7 +24,10 @@ pub struct User {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Principal {
-    pub user: User,
+    pub id: String,
+    pub name: String,
+    /// Validated Microsoft sign-in username (`preferred_username`).
+    pub email: Option<String>,
     pub csrf_token: String,
     #[serde(rename = "exp")]
     pub expires_at: i64,
@@ -49,6 +52,18 @@ impl LoginAttempt {
 impl Principal {
     pub fn valid_csrf(&self, token: &str) -> bool {
         CsrfToken::new(self.csrf_token.clone()) == CsrfToken::new(token.to_owned())
+    }
+
+    pub fn is_admin(&self, config: &AuthConfig) -> bool {
+        config.allows_email(self.email.as_deref())
+    }
+
+    pub fn user(&self, config: &AuthConfig) -> User {
+        User {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            is_admin: self.is_admin(config),
+        }
     }
 }
 
@@ -252,11 +267,9 @@ mod tests {
 
     fn user(expires_at: i64) -> Principal {
         Principal {
-            user: User {
-                id: "user".into(),
-                name: "User".into(),
-                is_admin: true,
-            },
+            id: "user".into(),
+            name: "User".into(),
+            email: Some("admin@example.com".into()),
             csrf_token: "csrf".into(),
             expires_at,
         }
@@ -275,7 +288,9 @@ mod tests {
     fn authenticated_app(admin: bool) -> (Router, String) {
         let state = test_state();
         let mut principal = user(now() + 60);
-        principal.user.is_admin = admin;
+        if !admin {
+            principal.email = Some("other@example.com".into());
+        }
         let cookie = session_header(&state.config.auth, &principal);
 
         (app(state), cookie)

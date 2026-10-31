@@ -85,7 +85,7 @@ fn complete_login(
     config: &AuthConfig,
     principal: session::Principal,
 ) -> Result<(CookieJar, FlowResponse), AuthError> {
-    if !principal.user.is_admin {
+    if !principal.is_admin(config) {
         return Ok((
             session::clear(jar, config),
             FlowResponse::redirect("/login?error=forbidden"),
@@ -98,9 +98,10 @@ fn complete_login(
 
 #[utoipa::path(get, path = "/api/auth/session", responses(SessionResponse))]
 pub async fn current_session(State(state): State<AppState>, jar: CookieJar) -> SessionResponse {
-    let principal = session::principal(&jar, &state.auth.config);
+    let config = &state.auth.config;
+    let principal = session::principal(&jar, config);
     SessionResponse::Success(SessionBody {
-        user: principal.as_ref().map(|p| p.user.clone()),
+        user: principal.as_ref().map(|p| p.user(config)),
         csrf_token: principal.map(|p| p.csrf_token),
     })
 }
@@ -130,7 +131,7 @@ pub async fn logout(
 mod tests {
     use super::*;
     use crate::{
-        auth::session::{LoginAttempt, Principal, User, round_trip},
+        auth::session::{LoginAttempt, Principal, round_trip},
         http::state::test_state,
     };
     use axum::{
@@ -141,11 +142,9 @@ mod tests {
 
     fn principal() -> Principal {
         Principal {
-            user: User {
-                id: "user".into(),
-                name: "User".into(),
-                is_admin: true,
-            },
+            id: "user".into(),
+            name: "User".into(),
+            email: Some("admin@example.com".into()),
             csrf_token: "csrf".into(),
             expires_at: OffsetDateTime::now_utc().unix_timestamp() + 60,
         }
@@ -180,7 +179,7 @@ mod tests {
         assert!(session::principal(&jar, &config).is_some());
 
         let mut denied = principal();
-        denied.user.is_admin = false;
+        denied.email = Some("other@example.com".into());
 
         let (jar, response) =
             complete_login(jar, &config, denied).unwrap_or_else(|_| panic!("login failed"));
