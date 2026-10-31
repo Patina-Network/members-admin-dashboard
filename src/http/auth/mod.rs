@@ -20,16 +20,17 @@ pub async fn login(
     State(state): State<AppState>,
     session: Session,
 ) -> Result<FlowResponse, AuthError> {
-    let provider = state.auth.as_ref().ok_or_else(AuthError::unavailable)?;
-    let (url, attempt) = match provider.begin().await {
+    let (url, attempt) = match state.auth.begin().await {
         Ok(attempt) => attempt,
         Err(_) => {
             tracing::warn!("Azure authorization discovery failed");
             return Ok(FlowResponse::redirect("/login?error=unavailable"));
         }
     };
+
     session.insert(LOGIN_KEY, attempt).await?;
     session.save().await?;
+
     Ok(FlowResponse::redirect(url))
 }
 
@@ -52,9 +53,10 @@ pub async fn callback(
     query: Result<Query<CallbackQuery>, QueryRejection>,
 ) -> Result<FlowResponse, AuthError> {
     let Query(query) = query.map_err(|_| AuthError::invalid())?;
-    let provider = state.auth.as_ref().ok_or_else(AuthError::unavailable)?;
+
     let attempt: Option<LoginAttempt> = session.remove(LOGIN_KEY).await?;
     session.save().await?;
+
     let Some(attempt) = attempt.filter(|a| {
         query
             .state
@@ -63,19 +65,23 @@ pub async fn callback(
     }) else {
         return Ok(FlowResponse::redirect("/login?error=invalid_callback"));
     };
+
     if query.error.is_some() {
         return Ok(FlowResponse::redirect("/login?error=cancelled"));
     }
+
     let Some(code) = query.code.filter(|s| !s.is_empty()) else {
         return Ok(FlowResponse::redirect("/login?error=invalid_callback"));
     };
-    let principal = match provider.finish(code, attempt).await {
+
+    let principal = match state.auth.finish(code, attempt).await {
         Ok(principal) => principal,
         Err(_) => {
             tracing::warn!("Azure token exchange or validation failed");
             return Ok(FlowResponse::redirect("/login?error=login_failed"));
         }
     };
+
     complete_login(&session, principal).await
 }
 
@@ -87,20 +93,17 @@ async fn complete_login(
         session.flush().await?;
         return Ok(FlowResponse::redirect("/login?error=forbidden"));
     }
+
     session::establish(session, principal).await?;
     Ok(FlowResponse::redirect("/database"))
 }
 
 #[utoipa::path(get, path = "/api/auth/session", responses(SessionResponse, AuthError))]
-pub async fn current_session(
-    State(state): State<AppState>,
-    session: Session,
-) -> Result<SessionResponse, AuthError> {
+pub async fn current_session(session: Session) -> Result<SessionResponse, AuthError> {
     let principal = session::principal(&session).await?;
     Ok(SessionResponse::Success(SessionBody {
         user: principal.as_ref().map(|p| p.user.clone()),
         csrf_token: principal.map(|p| p.csrf_token),
-        login_enabled: state.auth.is_some(),
     }))
 }
 
@@ -110,18 +113,17 @@ pub async fn logout(
     session: Session,
     headers: HeaderMap,
 ) -> Result<LogoutResponse, AuthError> {
-    guard::check_origin(&headers, state.auth.as_ref().map(|p| &p.config))?;
+    guard::check_origin(&headers, &state.auth.config)?;
+
     let principal = session::principal(&session).await?;
     if let Some(principal) = principal {
-        guard::check_csrf(&principal, &headers, state.auth.as_ref().map(|p| &p.config))?;
+        guard::check_csrf(&principal, &headers, &state.auth.config)?;
     }
+
     session.flush().await?;
+
     Ok(LogoutResponse::Success(LogoutBody {
-        redirect_url: state
-            .auth
-            .as_ref()
-            .map(|p| p.config.logout_url())
-            .unwrap_or_else(|| "/login".into()),
+        redirect_url: state.auth.config.logout_url(),
     }))
 }
 
@@ -129,11 +131,7 @@ pub async fn logout(
 mod tests {
     use super::*;
     use crate::{
-        auth::{
-            config::AuthConfig,
-            provider::AzureProvider,
-            session::{Principal, User},
-        },
+        auth::session::{Principal, User},
         http::state::test_state,
     };
     use axum::{
@@ -141,24 +139,8 @@ mod tests {
         response::IntoResponse,
     };
     use http_body_util::BodyExt;
-    use openidconnect::ClientSecret;
     use std::sync::Arc;
     use tower_sessions::MemoryStore;
-
-    fn auth_state() -> AppState {
-        let mut state = test_state();
-        state.auth = Some(Arc::new(
-            AzureProvider::new(AuthConfig {
-                tenant_id: "11111111-1111-1111-1111-111111111111".into(),
-                client_id: "22222222-2222-2222-2222-222222222222".into(),
-                client_secret: ClientSecret::new("test-secret".into()),
-                origin: "http://localhost:8080".parse().unwrap(),
-                admin_emails: vec!["admin@example.com".into()],
-            })
-            .unwrap(),
-        ));
-        state
-    }
 
     fn principal() -> Principal {
         Principal {
@@ -176,19 +158,24 @@ mod tests {
     async fn login_only_establishes_sessions_for_allowlisted_accounts() {
         let store = Arc::new(MemoryStore::default());
         let session = Session::new(None, store.clone(), None);
+
         let response = complete_login(&session, principal())
             .await
             .unwrap_or_else(|_| panic!("login failed"))
             .into_response();
+
         assert_eq!(response.headers()["location"], "/database");
         assert!(session::principal(&session).await.unwrap().is_some());
+
         let old_id = session.id();
         let mut denied = principal();
         denied.user.is_admin = false;
+
         let response = complete_login(&session, denied)
             .await
             .unwrap_or_else(|_| panic!("login failed"))
             .into_response();
+
         assert_eq!(response.headers()["location"], "/login?error=forbidden");
         assert!(session::principal(&session).await.unwrap().is_none());
         assert!(
@@ -208,6 +195,7 @@ mod tests {
             (Some("expected"), Some("code"), false),
         ] {
             let session = Session::new(None, Arc::new(MemoryStore::default()), None);
+
             if has_attempt {
                 session
                     .insert(
@@ -222,8 +210,9 @@ mod tests {
                     .await
                     .unwrap();
             }
+
             let response = callback(
-                State(auth_state()),
+                State(test_state()),
                 session.clone(),
                 Ok(Query(CallbackQuery {
                     code: code.map(str::to_owned),
@@ -234,6 +223,7 @@ mod tests {
             .await
             .unwrap_or_else(|_| panic!("callback failed"))
             .into_response();
+
             assert_eq!(
                 response.headers()["location"],
                 "/login?error=invalid_callback"
@@ -252,6 +242,7 @@ mod tests {
     #[tokio::test]
     async fn malformed_callback_query_returns_bad_request() {
         use axum::extract::FromRequestParts;
+
         let (mut parts, _) = axum::http::Request::builder()
             .uri("/oauth2/callback?code=one&code=two")
             .body(())
@@ -259,31 +250,31 @@ mod tests {
             .into_parts();
         let query = Query::<CallbackQuery>::from_request_parts(&mut parts, &()).await;
         assert!(query.is_err());
+
         let session = Session::new(None, Arc::new(MemoryStore::default()), None);
-        let response = callback(State(auth_state()), session, query)
+        let response = callback(State(test_state()), session, query)
             .await
             .err()
             .unwrap()
             .into_response();
+
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
-    async fn reports_signed_out_session_when_auth_is_not_configured() {
+    async fn reports_signed_out_session() {
         let session = Session::new(None, Arc::new(MemoryStore::default()), None);
-        let response = current_session(State(test_state()), session.clone())
+
+        let response = current_session(session)
             .await
             .unwrap_or_else(|_| panic!("session failed"))
             .into_response();
+
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
-            serde_json::json!({"user": null, "csrfToken": null, "loginEnabled": false})
+            serde_json::json!({"user": null, "csrfToken": null})
         );
-        assert!(matches!(
-            login(State(test_state()), session).await,
-            Err(AuthError::Unavailable(_))
-        ));
     }
 
     #[tokio::test]
@@ -292,18 +283,22 @@ mod tests {
         let session = Session::new(None, store.clone(), None);
         session::establish(&session, principal()).await.unwrap();
         let id = session.id();
+
         assert!(matches!(
-            logout(State(auth_state()), session.clone(), HeaderMap::new()).await,
+            logout(State(test_state()), session.clone(), HeaderMap::new()).await,
             Err(AuthError::Forbidden(_))
         ));
         assert!(session::principal(&session).await.unwrap().is_some());
+
         let mut headers = HeaderMap::new();
         headers.insert("x-csrf-token", HeaderValue::from_static("csrf"));
         headers.insert("origin", HeaderValue::from_static("http://localhost:8080"));
-        let response = logout(State(auth_state()), session.clone(), headers)
+
+        let response = logout(State(test_state()), session.clone(), headers)
             .await
             .unwrap_or_else(|_| panic!("logout failed"))
             .into_response();
+
         assert_eq!(response.status(), StatusCode::OK);
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -331,15 +326,18 @@ mod tests {
             )
             .await
             .unwrap();
+
         let query = CallbackQuery {
             code: Some("code".into()),
             state: Some("wrong".into()),
             error: None,
         };
-        let response = callback(State(auth_state()), session.clone(), Ok(Query(query)))
+
+        let response = callback(State(test_state()), session.clone(), Ok(Query(query)))
             .await
             .unwrap_or_else(|_| panic!("callback failed"))
             .into_response();
+
         assert_eq!(
             response.headers()["location"],
             "/login?error=invalid_callback"
@@ -369,15 +367,18 @@ mod tests {
             )
             .await
             .unwrap();
+
         let query = CallbackQuery {
             code: None,
             state: Some("expected".into()),
             error: Some("access_denied".into()),
         };
-        let response = callback(State(auth_state()), session.clone(), Ok(Query(query)))
+
+        let response = callback(State(test_state()), session.clone(), Ok(Query(query)))
             .await
             .unwrap_or_else(|_| panic!("callback failed"))
             .into_response();
+
         assert_eq!(response.headers()["location"], "/login?error=cancelled");
         assert!(session::principal(&session).await.unwrap().is_none());
     }

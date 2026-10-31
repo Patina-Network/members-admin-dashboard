@@ -17,6 +17,7 @@ where
 {
     let mut request = Request::new(message);
     request.set_timeout(timeout);
+
     tokio::time::timeout(timeout, rpc(request))
         .await
         .map_err(|_| UpstreamError::Timeout)?
@@ -37,6 +38,7 @@ where
             "profile",
             tonic::metadata::MetadataValue::from_static("core_admin"),
         );
+
         rpc(request)
     })
     .await
@@ -70,6 +72,7 @@ mod tests {
         })
         .await
         .unwrap();
+
         assert_eq!(result, "output");
     }
 
@@ -79,6 +82,7 @@ mod tests {
             std::future::pending::<Result<Response<()>, Status>>()
         })
         .await;
+
         assert!(matches!(result, Err(UpstreamError::Timeout)));
     }
 }

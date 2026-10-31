@@ -46,6 +46,7 @@ export default function DatabasePage() {
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [editing, setEditing] = useState<Member | null>(null);
   const [archiving, setArchiving] = useState<Member | null>(null);
+
   return (
     <>
       <Group justify="space-between" mb="md">

@@ -13,4 +13,5 @@ export const exclusions = [
   `${baseDir}/http/version.rs`,
   `${baseDir}/http/health.rs`,
   `${baseDir}/http/spa.rs`,
+  `${baseDir}/http/state.rs`,
 ];

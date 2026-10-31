@@ -18,6 +18,7 @@ function renderDatabase() {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
+
   render(
     <QueryClientProvider client={client}>
       <MantineProvider>
@@ -37,12 +38,13 @@ function renderDatabase() {
       </MantineProvider>
     </QueryClientProvider>,
   );
+
   return client;
 }
 
 function session(user: SessionBody["user"]) {
   vi.mocked(currentSession).mockResolvedValue({
-    data: { user, csrfToken: user ? "csrf" : null, loginEnabled: true },
+    data: { user, csrfToken: user ? "csrf" : null },
     request: new Request("http://localhost/api/auth/session"),
     response: new Response(),
   });
@@ -53,28 +55,36 @@ describe("Database access", () => {
 
   it("waits for the session before rendering protected content", () => {
     vi.mocked(currentSession).mockReturnValue(new Promise<never>(() => {}));
+
     renderDatabase();
+
     expect(screen.getByLabelText("Checking admin access")).toBeInTheDocument();
     expect(screen.queryByText("Protected member data")).not.toBeInTheDocument();
   });
 
   it("redirects a signed-out user to login", async () => {
     session(null);
+
     renderDatabase();
+
     expect(await screen.findByText("Sign in page")).toBeInTheDocument();
     expect(screen.queryByText("Protected member data")).not.toBeInTheDocument();
   });
 
   it("denies an authenticated user without allowlisted access", async () => {
     session({ id: "user", name: "User", isAdmin: false });
+
     renderDatabase();
+
     expect(await screen.findByText("Access denied")).toBeInTheDocument();
     expect(screen.queryByText("Protected member data")).not.toBeInTheDocument();
   });
 
   it("renders the database for admins", async () => {
     session({ id: "admin", name: "Admin", isAdmin: true });
+
     renderDatabase();
+
     expect(
       await screen.findByText("Protected member data"),
     ).toBeInTheDocument();
@@ -82,7 +92,9 @@ describe("Database access", () => {
 
   it("fails closed when the session request fails", async () => {
     vi.mocked(currentSession).mockRejectedValue(new Error("Unavailable"));
+
     renderDatabase();
+
     expect(
       await screen.findByText("Unable to check your session."),
     ).toBeInTheDocument();

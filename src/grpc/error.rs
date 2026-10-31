@@ -24,6 +24,7 @@ pub enum UpstreamError {
 impl From<Status> for UpstreamError {
     fn from(status: Status) -> Self {
         tracing::warn!(code = ?status.code(), detail = status.message(), "gRPC request failed");
+
         match status.code() {
             Code::InvalidArgument => Self::InvalidArgument,
             Code::NotFound => Self::NotFound,
@@ -55,6 +56,7 @@ impl UpstreamError {
             Self::Timeout => (StatusCode::GATEWAY_TIMEOUT, "upstream timeout"),
             Self::Failed => (StatusCode::BAD_GATEWAY, "upstream request failed"),
         };
+
         (status, ErrorBody { error })
     }
 }
@@ -87,6 +89,7 @@ impl utoipa::IntoResponses for UpstreamError {
                     Content::new(Some(<ErrorBody as utoipa::PartialSchema>::schema())),
                 )
                 .build();
+
             (status.as_u16().to_string(), response.into())
         })
         .collect()

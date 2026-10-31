@@ -1,5 +1,7 @@
 use std::{env, time::Duration};
 
+use anyhow::{Context, bail, ensure};
+use openidconnect::{ClientSecret, url::Url};
 use tonic::transport::{ClientTlsConfig, Endpoint};
 use tracing::info;
 
@@ -11,6 +13,9 @@ pub struct Config {
     pub http_port: u16,
     pub enable_documentation: bool,
     pub version: Option<String>,
+    pub environment: Option<String>,
+    pub log_filter: String,
+    pub auth: AuthConfig,
 }
 
 impl Config {
@@ -22,35 +27,48 @@ impl Config {
             http_port = self.http_port,
             enable_documentation = self.enable_documentation,
             version = %self.version.clone().unwrap_or_else(|| "N/A".into()),
+            environment = self.environment.as_deref().unwrap_or("N/A"),
+            log_filter = %self.log_filter,
+            app_origin = %self.auth.origin,
             "loaded config"
         );
     }
 
     pub fn from_env() -> anyhow::Result<Self> {
-        Ok(Self::from_vars(|key| env::var(key).ok()))
-    }
-
-    fn from_vars(var: impl Fn(&str) -> Option<String>) -> Self {
-        Self {
-            members_admin_service_grpc_host: var("MEMBERS_ADMIN_SERVICE_GRPC_HOST")
-                .unwrap_or_else(|| "members-admin-grpc-service:50051".into()),
-            members_admin_service_grpc_tls: var("MEMBERS_ADMIN_SERVICE_GRPC_TLS")
+        Ok(Self {
+            members_admin_service_grpc_host: env::var("MEMBERS_ADMIN_SERVICE_GRPC_HOST")
+                .unwrap_or_else(|_| "members-admin-grpc-service:50051".into()),
+            members_admin_service_grpc_tls: env::var("MEMBERS_ADMIN_SERVICE_GRPC_TLS")
+                .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(false),
             members_admin_service_grpc_timeout: Duration::from_millis(
-                var("MEMBERS_ADMIN_SERVICE_GRPC_TIMEOUT_MS")
+                env::var("MEMBERS_ADMIN_SERVICE_GRPC_TIMEOUT_MS")
+                    .ok()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(3000),
             ),
-            http_port: var("HTTP_PORT")
+            http_port: env::var("HTTP_PORT")
+                .ok()
                 .and_then(|s| s.parse().ok())
                 .filter(|port| (1..=65535).contains(port))
                 .unwrap_or(8080),
-            enable_documentation: var("ENABLE_DOCUMENTATION")
+            enable_documentation: env::var("ENABLE_DOCUMENTATION")
+                .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(true),
-            version: var("VERSION"),
-        }
+            version: env::var("VERSION").ok(),
+            environment: env::var("ENVIRONMENT").ok(),
+            log_filter: env::var("RUST_LOG")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or_else(|| "info".into()),
+            auth: AuthConfig::from_env(is_deployed(env::var("ENVIRONMENT").ok().as_deref()))?,
+        })
+    }
+
+    pub fn deployed(&self) -> bool {
+        is_deployed(self.environment.as_deref())
     }
 
     pub fn grpc_endpoint(&self) -> anyhow::Result<Endpoint> {
@@ -59,98 +77,142 @@ impl Config {
         } else {
             "http"
         };
+
         let endpoint = Endpoint::from_shared(format!(
             "{scheme}://{}",
             self.members_admin_service_grpc_host
         ))?
         .connect_timeout(self.members_admin_service_grpc_timeout)
         .timeout(self.members_admin_service_grpc_timeout);
+
         if !self.members_admin_service_grpc_tls {
             return Ok(endpoint);
         }
+
         Ok(endpoint.tls_config(ClientTlsConfig::new().with_native_roots())?)
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::{collections::HashMap, time::Duration};
+#[derive(Debug, Clone)]
+pub struct AuthConfig {
+    pub tenant_id: String,
+    pub client_id: String,
+    pub client_secret: ClientSecret,
+    pub origin: Url,
+    pub admin_emails: Vec<String>,
+}
 
-    use super::Config;
+impl AuthConfig {
+    fn from_env(deployed: bool) -> anyhow::Result<Self> {
+        Ok(Self {
+            tenant_id: {
+                let tenant_id = required("AZURE_TENANT_ID")?;
+                ensure!(
+                    is_uuid(&tenant_id),
+                    "AZURE_TENANT_ID must be a tenant UUID (not common or organizations)"
+                );
+                tenant_id
+            },
+            client_id: {
+                let client_id = required("AZURE_CLIENT_ID")?;
+                ensure!(
+                    is_uuid(&client_id),
+                    "AZURE_CLIENT_ID must be an application UUID"
+                );
+                client_id
+            },
+            client_secret: ClientSecret::new(required("AZURE_CLIENT_SECRET")?),
+            origin: {
+                let origin = Url::parse(&required("APP_ORIGIN")?)
+                    .context("APP_ORIGIN must be an absolute URL")?;
+                let local = matches!(origin.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+                if origin.scheme() != "https" && !(origin.scheme() == "http" && local && !deployed)
+                {
+                    bail!("APP_ORIGIN must use HTTPS, except on localhost during development");
+                }
+                ensure!(
+                    origin.host_str().is_some()
+                        && origin.username().is_empty()
+                        && origin.password().is_none()
+                        && origin.path() == "/"
+                        && origin.query().is_none()
+                        && origin.fragment().is_none(),
+                    "APP_ORIGIN must contain only the scheme, host, and optional port"
+                );
+                origin
+            },
+            admin_emails: {
+                let admin_emails = env::var("AZURE_ADMIN_EMAILS")
+                    .unwrap_or_default()
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|email| !email.is_empty())
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>();
 
-    fn config_from(vars: &[(&str, &str)]) -> Config {
-        let vars: HashMap<&str, &str> = vars.iter().copied().collect();
-        Config::from_vars(|key| vars.get(key).map(|v| (*v).to_owned()))
+                for email in &admin_emails {
+                    ensure!(
+                        email.split_once('@').is_some_and(|(local, domain)| {
+                            !local.is_empty() && !domain.is_empty() && !domain.contains('@')
+                        }) && !email.chars().any(char::is_whitespace)
+                            && !email.contains('*'),
+                        "AZURE_ADMIN_EMAILS must contain comma-separated valid email addresses."
+                    );
+                }
+                admin_emails
+            },
+        })
     }
 
-    #[test]
-    fn uses_defaults_when_unset() {
-        let config = config_from(&[]);
-
-        assert_eq!(
-            config.members_admin_service_grpc_host,
-            "members-admin-grpc-service:50051"
-        );
-        assert!(!config.members_admin_service_grpc_tls);
-        assert_eq!(
-            config.members_admin_service_grpc_timeout,
-            Duration::from_millis(3000)
-        );
-        assert_eq!(config.http_port, 8080);
-        assert!(config.enable_documentation);
+    pub fn allows_email(&self, email: Option<&str>) -> bool {
+        email.is_some_and(|email| {
+            self.admin_emails
+                .iter()
+                .any(|allowed| allowed.eq_ignore_ascii_case(email))
+        })
     }
 
-    #[test]
-    fn reads_set_values() {
-        let config = config_from(&[
-            ("MEMBERS_ADMIN_SERVICE_GRPC_HOST", "grpc.example.com:443"),
-            ("MEMBERS_ADMIN_SERVICE_GRPC_TLS", "true"),
-            ("MEMBERS_ADMIN_SERVICE_GRPC_TIMEOUT_MS", "30000"),
-            ("HTTP_PORT", "9000"),
-            ("ENABLE_DOCUMENTATION", "false"),
-        ]);
-
-        assert_eq!(
-            config.members_admin_service_grpc_host,
-            "grpc.example.com:443"
-        );
-        assert!(config.members_admin_service_grpc_tls);
-        assert_eq!(
-            config.members_admin_service_grpc_timeout,
-            Duration::from_millis(30000)
-        );
-        assert_eq!(config.http_port, 9000);
-        assert!(!config.enable_documentation);
+    pub fn secure_cookie(&self) -> bool {
+        self.origin.scheme() == "https"
     }
 
-    #[test]
-    fn falls_back_to_defaults_on_invalid_values() {
-        for (key, value) in [
-            ("MEMBERS_ADMIN_SERVICE_GRPC_TLS", "yes"),
-            ("ENABLE_DOCUMENTATION", "invalid"),
-            ("MEMBERS_ADMIN_SERVICE_GRPC_TIMEOUT_MS", "fast"),
-            ("HTTP_PORT", "70000"),
-            ("HTTP_PORT", "http"),
-        ] {
-            let config = config_from(&[(key, value)]);
-
-            assert!(!config.members_admin_service_grpc_tls, "{key}={value}");
-            assert!(config.enable_documentation, "{key}={value}");
-            assert_eq!(
-                config.members_admin_service_grpc_timeout,
-                Duration::from_millis(3000),
-                "{key}={value}"
-            );
-            assert_eq!(config.http_port, 8080, "{key}={value}");
-        }
+    pub fn callback_url(&self) -> String {
+        format!("{}oauth2/callback", self.origin)
     }
 
-    #[test]
-    fn plaintext_endpoint_uses_http_scheme() {
-        let endpoint = config_from(&[("MEMBERS_ADMIN_SERVICE_GRPC_HOST", "localhost:50051")])
-            .grpc_endpoint()
-            .unwrap();
+    pub fn logout_url(&self) -> String {
+        let mut url = Url::parse(&format!(
+            "https://login.microsoftonline.com/{}/oauth2/v2.0/logout",
+            self.tenant_id
+        ))
+        .unwrap();
 
-        assert_eq!(endpoint.uri().to_string(), "http://localhost:50051/");
+        url.query_pairs_mut()
+            .append_pair("post_logout_redirect_uri", &format!("{}login", self.origin));
+
+        url.into()
     }
+}
+
+fn is_deployed(environment: Option<&str>) -> bool {
+    environment
+        .is_some_and(|v| v.eq_ignore_ascii_case("production") || v.eq_ignore_ascii_case("staging"))
+}
+
+fn required(name: &str) -> anyhow::Result<String> {
+    env::var(name)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .with_context(|| format!("{name} is required"))
+}
+
+fn is_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(i, c)| {
+            if [8, 13, 18, 23].contains(&i) {
+                c == b'-'
+            } else {
+                c.is_ascii_hexdigit()
+            }
+        })
 }

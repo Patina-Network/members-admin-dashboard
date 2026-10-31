@@ -17,11 +17,19 @@ pub struct AppState {
     pub prometheus_handle: PrometheusHandle,
     pub sys_collector: Collector,
     pub config: Config,
-    pub auth: Option<Arc<AzureProvider>>,
+    pub auth: Arc<AzureProvider>,
 }
 
 #[cfg(test)]
 pub(crate) fn test_state() -> AppState {
+    let auth = crate::config::AuthConfig {
+        tenant_id: "11111111-1111-1111-1111-111111111111".into(),
+        client_id: "22222222-2222-2222-2222-222222222222".into(),
+        client_secret: openidconnect::ClientSecret::new("test-secret".into()),
+        origin: "http://localhost:8080".parse().unwrap(),
+        admin_emails: vec!["admin@example.com".into()],
+    };
+
     AppState {
         members_client: MembersServiceClient::new(
             tonic::transport::Endpoint::from_static("http://localhost:50051").connect_lazy(),
@@ -40,7 +48,10 @@ pub(crate) fn test_state() -> AppState {
             http_port: 8080,
             enable_documentation: true,
             version: None,
+            environment: None,
+            log_filter: "info".into(),
+            auth: auth.clone(),
         },
-        auth: None,
+        auth: Arc::new(AzureProvider::new(auth).unwrap()),
     }
 }

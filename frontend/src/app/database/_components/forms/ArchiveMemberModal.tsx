@@ -12,9 +12,11 @@ export default function ArchiveMemberModal({
 }: ArchiveMemberModalProps) {
   const archive = useArchiveMemberMutation();
   const submitting = useRef(false);
+
   const close = () => {
     if (!submitting.current) onClose();
   };
+
   return (
     <Modal
       opened
@@ -57,6 +59,7 @@ export default function ArchiveMemberModal({
             onClick={() => {
               if (submitting.current) return;
               submitting.current = true;
+
               archive.mutate(member.member_id, {
                 onSuccess: () => {
                   notifications.show({

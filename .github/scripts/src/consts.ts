@@ -27,5 +27,6 @@ export function requiredEnv(name: string) {
   if (!v) {
     throw new Error(`Missing ${name} from env`);
   }
+
   return v;
 }

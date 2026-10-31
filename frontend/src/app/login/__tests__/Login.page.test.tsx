@@ -14,7 +14,7 @@ vi.mock("@/lib/api/generated/sdk.gen", () => ({
 
 beforeEach(() => {
   vi.mocked(currentSession).mockResolvedValue({
-    data: { user: null, csrfToken: null, loginEnabled: true },
+    data: { user: null, csrfToken: null },
     request: new Request("http://localhost/api/auth/session"),
     response: new Response(),
   });
@@ -43,6 +43,7 @@ it.each([
   "",
 ])("ignores undefined error key %s without breaking sign-in", async (error) => {
   renderLogin(error);
+
   expect(
     await screen.findByRole("link", { name: "Sign in with Microsoft" }),
   ).toBeInTheDocument();
@@ -69,5 +70,6 @@ it.each([
   ],
 ])("shows the defined message for %s", async (error, message) => {
   renderLogin(error);
+
   expect(await screen.findByRole("alert")).toHaveTextContent(message);
 });

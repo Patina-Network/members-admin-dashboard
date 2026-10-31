@@ -29,9 +29,11 @@ const { environment, releaseTag, sha } = await yargs(hideBin(process.argv))
     if (!releaseTag === !sha) {
       throw new Error("Pass exactly one non-empty --releaseTag or --sha");
     }
+
     if (environment === "staging" && releaseTag) {
       throw new Error("--releaseTag can only be deployed to production");
     }
+
     return true;
   })
   .strict()
