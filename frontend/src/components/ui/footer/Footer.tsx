@@ -19,7 +19,7 @@ export function Footer() {
         <Box className={styles.footerContents}>
           <Box visibleFrom="sm" className={styles.footerLeft}>
             <Flex align="center">
-              <img src="/logo.png" width={45} alt="Logo" />
+              <img src="/logo.svg" width={45} alt="Logo" />
               <Text fw={550} size="md">
                 Members Admin
               </Text>
@@ -31,7 +31,7 @@ export function Footer() {
           <Box className={styles.footerRight}>
             <Box hiddenFrom="sm">
               <Flex align="center">
-                <img src="/logo.png" width={45} alt="Logo" />
+                <img src="/logo.svg" width={45} alt="Logo" />
                 <Text fw={550} size="md">
                   Members Admin
                 </Text>

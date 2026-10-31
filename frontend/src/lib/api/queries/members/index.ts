@@ -202,6 +202,9 @@ export const useUpdateMemberMutation = () => {
       );
 
       void queryClient.invalidateQueries({ queryKey: membersKey });
+      void queryClient.invalidateQueries({
+        queryKey: detailsQueryKey({ path: { member_id: member.member_id } }),
+      });
     },
   });
 };

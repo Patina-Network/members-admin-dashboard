@@ -26,7 +26,7 @@ export default function Header() {
             <Link to="/">
               <Group>
                 <motion.img
-                  src="/logo.png"
+                  src="/logo.svg"
                   style={{ width: logoSize, height: logoSize }}
                   alt="Logo"
                 />
@@ -44,7 +44,7 @@ export default function Header() {
                       gradient={{ from: "patina.4", to: "patina.8" }}
                       style={{ fontSize }}
                     >
-                      Members Admin
+                      Members Admin Dashboard
                     </MotionText>
                   </Title>
                 </MotionBox>

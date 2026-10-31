@@ -35,7 +35,7 @@ export default function LoginPage() {
     <Center mih="100vh">
       <AppCard w={500} maw="100%" ta="center">
         <Text fw={400} size="xl">
-          Welcome to Members Admin
+          Welcome to Members Admin Dashboard
         </Text>
         <Space h="md" />
         {isPending ?
