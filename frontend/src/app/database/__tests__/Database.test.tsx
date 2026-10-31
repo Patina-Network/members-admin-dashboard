@@ -931,6 +931,10 @@ describe("member list states", () => {
     expect(screen.getByText("999")).toBeInTheDocument();
     expect(screen.getByText("angela")).toBeInTheDocument();
     expect(screen.getByText("Engineer")).toBeInTheDocument();
+    expect(await screen.findByText("Existing notes")).toBeInTheDocument();
+    expect(details).toHaveBeenCalledWith(
+      expect.objectContaining({ path: { member_id: 1 } }),
+    );
 
     await userEvent.click(
       screen.getByRole("button", { name: "Hide additional info for member 1" }),

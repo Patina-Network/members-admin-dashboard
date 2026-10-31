@@ -1,11 +1,37 @@
-import { Button, SimpleGrid, Table, Text } from "@mantine/core";
+import { Box, Button, SimpleGrid, Table, Text } from "@mantine/core";
 
 import type { MemberTableRowProps } from "@/app/database/_components/shared/types";
 
 import { roleLabels } from "@/app/database/_components/shared/memberRoles";
+import { useMemberDetailsQuery } from "@/lib/api/queries/members";
 
 function display(value: string | null | undefined) {
   return value || "—";
+}
+
+function MemberProfile({ memberId }: { memberId: number }) {
+  const query = useMemberDetailsQuery(memberId);
+
+  return (
+    <Box mt="xs">
+      <Text size="sm" fw={500}>
+        Profile notes:
+      </Text>
+      {query.isPending ?
+        <Text size="sm">Loading…</Text>
+      : query.isError ?
+        <Text size="sm" c="red">
+          {query.error.message}
+        </Text>
+      : <Text
+          size="sm"
+          style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
+        >
+          {display(query.data.profile)}
+        </Text>
+      }
+    </Box>
+  );
 }
 
 export default function MemberTableRow({
@@ -103,6 +129,7 @@ export default function MemberTableRow({
                 {display(member.industry)}
               </Text>
             </SimpleGrid>
+            <MemberProfile memberId={member.member_id} />
           </Table.Td>
         </Table.Tr>
       )}
