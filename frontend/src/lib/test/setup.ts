@@ -17,3 +17,12 @@ Object.defineProperty(window, "matchMedia", {
     dispatchEvent: vi.fn(),
   })),
 });
+
+// Mantine's Combobox/ScrollArea measures layout; jsdom implements neither API.
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+window.ResizeObserver = ResizeObserverStub;
+window.HTMLElement.prototype.scrollIntoView = () => {};
