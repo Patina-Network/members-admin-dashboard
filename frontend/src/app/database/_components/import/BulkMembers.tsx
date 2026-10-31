@@ -33,18 +33,21 @@ export default function BulkMembers({ onBack, onPending }: BulkMembersProps) {
   const [reading, setReading] = useState(false);
   const mutation = useBulkAddMembersMutation();
   const busy = useRef(false);
+
   const reset = () => {
     setRows([]);
     setFileName("");
     setError("");
     mutation.reset();
   };
+
   const upload = async (files: File[]) => {
     if (busy.current || !files[0]) return;
     busy.current = true;
     setReading(true);
     onPending(true);
     setError("");
+
     try {
       setRows(parseMembersCsv(await files[0].text()));
       setFileName(files[0].name);
@@ -56,10 +59,12 @@ export default function BulkMembers({ onBack, onPending }: BulkMembersProps) {
       onPending(false);
     }
   };
+
   const submit = () => {
     if (busy.current) return;
     busy.current = true;
     onPending(true);
+
     mutation.mutate(
       rows.map((row) => row.member),
       {
@@ -70,6 +75,7 @@ export default function BulkMembers({ onBack, onPending }: BulkMembersProps) {
       },
     );
   };
+
   const previewColumns = columns.filter(
     (column, index) =>
       index < 3 || rows.some(({ member }) => member[column] != null),
@@ -79,6 +85,7 @@ export default function BulkMembers({ onBack, onPending }: BulkMembersProps) {
   );
   const addedCount =
     mutation.data?.results.filter((row) => row.member).length ?? 0;
+
   return (
     <Stack gap="md">
       {(error || mutation.error) && (

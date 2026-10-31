@@ -4,12 +4,14 @@ import { type ComponentPropsWithoutRef, forwardRef } from "react";
 
 type MotionBoxProps = BoxProps &
   Omit<ComponentPropsWithoutRef<"div">, keyof BoxProps>;
+
 type MotionTextProps = TextProps &
   Omit<ComponentPropsWithoutRef<"p">, keyof TextProps>;
 
 const BoxRef = forwardRef<HTMLDivElement, MotionBoxProps>((props, ref) => (
   <Box {...props} ref={ref} />
 ));
+
 const TextRef = forwardRef<HTMLParagraphElement, MotionTextProps>(
   (props, ref) => <Text {...props} ref={ref} />,
 );

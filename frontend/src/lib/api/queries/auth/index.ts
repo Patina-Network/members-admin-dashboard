@@ -15,10 +15,12 @@ export function useAuthQuery() {
     queryKey: authQueryKey,
     queryFn: async ({ signal }) => {
       const { data, error, response } = await currentSession({ signal });
+
       if (!data) {
         if (!response) throw error;
         throw new SessionRequestError(response.status);
       }
+
       return data;
     },
     retry: (failureCount, error) =>
@@ -35,6 +37,7 @@ export function useAuthQuery() {
 
 export function useLogoutMutation() {
   const queryClient = useQueryClient();
+
   return useMutation({
     mutationFn: async (csrfToken: string) => {
       const { data } = await logout({

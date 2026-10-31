@@ -32,6 +32,7 @@ export function parseMembersCsv(text: string): CsvMemberRow[] {
     throw new Error(
       "Choose a CSV file of 1 MB or less. Split larger files into smaller imports.",
     );
+
   const records: { sourceRow: number; values: string[] }[] = [];
   let sourceRow = 1;
   let row: string[] = [],
@@ -39,6 +40,7 @@ export function parseMembersCsv(text: string): CsvMemberRow[] {
     quoted = false,
     closed = false;
   text = text.replace(/^\uFEFF/, "");
+
   for (let i = 0; i < text.length; i++) {
     const char = text[i];
     if (quoted) {
@@ -54,6 +56,7 @@ export function parseMembersCsv(text: string): CsvMemberRow[] {
       row.push(field.trim());
       field = "";
       closed = false;
+
       if (char !== ",") {
         if (row.some(Boolean)) records.push({ sourceRow, values: row });
         row = [];
@@ -65,9 +68,11 @@ export function parseMembersCsv(text: string): CsvMemberRow[] {
       field += char;
     }
   }
+
   if (quoted) throw new Error("Unclosed quoted CSV field.");
   row.push(field.trim());
   if (row.some(Boolean)) records.push({ sourceRow, values: row });
+
   const header = records.shift()?.values;
   if (
     !header ||
@@ -78,21 +83,28 @@ export function parseMembersCsv(text: string): CsvMemberRow[] {
     throw new Error(
       "Include email, first_name, last_name headers and only supported columns.",
     );
+
   if (!records.length || records.length > maxMembers)
     throw new Error("Upload between 1 and 1,000 members.");
+
   const rows = records.map(({ values, sourceRow }) => {
     const fail = (message: string): never => {
       throw new Error(`Row ${sourceRow}: ${message}`);
     };
+
     if (values.length !== header.length)
       fail("Column count does not match headers.");
+
     const member = Object.fromEntries(
       header.map((key, i) => [key, values[i] || null]),
     ) as NewMember;
+
     if (!member.first_name || !member.last_name)
       fail("First and last names are required.");
+
     const emailError = validateEmail(member.email ?? "");
     if (emailError) fail(emailError);
+
     if (member.joined_at) {
       if (!isValidJoinedAt(member.joined_at))
         fail(
@@ -100,21 +112,27 @@ export function parseMembersCsv(text: string): CsvMemberRow[] {
         );
       member.joined_at = new Date(member.joined_at).toISOString();
     }
+
     if (!!member.discord_id !== !!member.discord_username)
       fail("Discord ID and username must be provided together.");
+
     const discordError = validateDiscordId(
       member.discord_id ?? "",
       member.discord_username ?? "",
     );
     if (discordError) fail(discordError);
+
     for (const key of ["linkedin_username", "instagram_username"] as const) {
       const error = validateSocialUsername(member[key] ?? "");
       if (error) fail(`${key}: ${error}`);
     }
+
     if (member.role && !isMemberRole(member.role))
       fail("role must be board, mentor, or mentee.");
+
     return { sourceRow, member };
   });
+
   if (
     new TextEncoder().encode(
       JSON.stringify({ members: rows.map((row) => row.member) }),
@@ -123,6 +141,7 @@ export function parseMembersCsv(text: string): CsvMemberRow[] {
     throw new Error(
       "This CSV expands beyond the import size limit. Split it into smaller files or shorten long text fields.",
     );
+
   return rows;
 }
 
@@ -132,9 +151,11 @@ function isValidJoinedAt(value: string) {
       value,
     );
   if (!match) return false;
+
   const [, year, month, day] = match;
   const calendarDate = new Date(`${year}-${month}-${day}T00:00:00Z`);
   const timestamp = Date.parse(value);
+
   return (
     calendarDate.getUTCFullYear() === Number(year) &&
     calendarDate.getUTCMonth() + 1 === Number(month) &&

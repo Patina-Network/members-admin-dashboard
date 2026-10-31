@@ -21,6 +21,7 @@ const loginErrors: Record<string, string> = {
 export default function LoginPage() {
   const [params] = useSearchParams();
   const { data, isPending, isError, refetch } = useAuthQuery();
+
   const errorKey = params.get("error") ?? "";
   const error =
     Object.prototype.hasOwnProperty.call(loginErrors, errorKey) ?
@@ -59,12 +60,7 @@ export default function LoginPage() {
                 {error}
               </Alert>
             )}
-            {!data.loginEnabled && (
-              <Alert color="yellow" mb="md">
-                Sign-in is currently unavailable.
-              </Alert>
-            )}
-            <LoginButton disabled={!data.loginEnabled} />
+            <LoginButton />
           </>
         }
         <Space h="sm" />

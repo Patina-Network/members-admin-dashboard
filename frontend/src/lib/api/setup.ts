@@ -7,6 +7,7 @@ export function setupApi() {
     if (response.status === 401 || response.status === 403) {
       void queryClient.invalidateQueries({ queryKey: authQueryKey });
     }
+
     return response;
   });
 }

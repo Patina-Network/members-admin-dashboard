@@ -1,6 +1,8 @@
+use std::sync::Arc;
+
 use anyhow::Context;
 use members_admin_dashboard::{
-    auth::{config::AuthConfig, provider::AzureProvider, session::with_sessions},
+    auth::{provider::AzureProvider, session::with_sessions},
     config::Config,
     http::{app, state::AppState},
 };
@@ -9,16 +11,13 @@ use members_grpc_service::members::{
     members_service_client::MembersServiceClient,
 };
 use metrics_exporter_prometheus::PrometheusBuilder;
+use tracing_subscriber::EnvFilter;
 
-fn init_tracing() {
-    let use_json = std::env::var("ENVIRONMENT")
-        .map(|v| v.eq_ignore_ascii_case("production") || v.eq_ignore_ascii_case("staging"))
-        .unwrap_or(false);
+fn init_tracing(config: &Config) {
+    let env_filter =
+        EnvFilter::try_new(&config.log_filter).unwrap_or_else(|_| EnvFilter::new("info"));
 
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-
-    if use_json {
+    if config.deployed() {
         tracing_subscriber::fmt()
             .json()
             .with_env_filter(env_filter)
@@ -33,7 +32,10 @@ fn init_tracing() {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    init_tracing();
+    let config = Config::from_env()?;
+
+    init_tracing(&config);
+    config.log();
 
     let prometheus_handle = PrometheusBuilder::new()
         .install_recorder()
@@ -41,16 +43,11 @@ async fn main() -> anyhow::Result<()> {
     let sys_collector = metrics_process::Collector::default();
     sys_collector.describe();
 
-    let config = Config::from_env()?;
-    config.log();
-    let auth_config = AuthConfig::from_env()?;
-    let auth = auth_config
-        .clone()
-        .map(AzureProvider::new)
-        .transpose()?
-        .map(std::sync::Arc::new);
+    let auth = Arc::new(AzureProvider::new(config.auth.clone())?);
+
     let channel = config.grpc_endpoint()?.connect_lazy();
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", config.http_port)).await?;
+
     let state = AppState {
         client: MembersAdminServiceClient::new(channel.clone()),
         members_client: MembersServiceClient::new(channel),
@@ -59,11 +56,15 @@ async fn main() -> anyhow::Result<()> {
         config: config.clone(),
         auth,
     };
+
     tracing::info!(address=%listener.local_addr()?, "HTTP server started");
-    let router = with_sessions(app(state), auth_config.as_ref());
+
+    let router = with_sessions(app(state), &config.auth);
+
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown())
         .await?;
+
     Ok(())
 }
 
@@ -73,6 +74,7 @@ async fn shutdown() {
             .await
             .expect("install Ctrl-C handler")
     };
+
     #[cfg(unix)]
     let terminate = async {
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -80,5 +82,6 @@ async fn shutdown() {
             .recv()
             .await;
     };
+
     tokio::select! {_=ctrl_c=>{},_=terminate=>{}}
 }

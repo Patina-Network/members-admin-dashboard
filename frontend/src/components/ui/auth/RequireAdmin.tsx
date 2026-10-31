@@ -14,6 +14,7 @@ export default function RequireAdmin({ children }: { children: ReactNode }) {
       </Center>
     );
   }
+
   if (isError) {
     return (
       <Stack align="center">
@@ -22,7 +23,9 @@ export default function RequireAdmin({ children }: { children: ReactNode }) {
       </Stack>
     );
   }
+
   if (!data.user) return <Navigate to="/login" replace />;
+
   if (!data.user.isAdmin) {
     return (
       <Stack align="center">
@@ -36,5 +39,6 @@ export default function RequireAdmin({ children }: { children: ReactNode }) {
       </Stack>
     );
   }
+
   return children;
 }

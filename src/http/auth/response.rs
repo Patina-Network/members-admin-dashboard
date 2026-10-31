@@ -16,8 +16,6 @@ pub enum AuthError {
     Unauthorized(ErrorBody),
     #[response(status = 403, description = "Admin access or CSRF validation denied")]
     Forbidden(ErrorBody),
-    #[response(status = 503, description = "Authentication unavailable")]
-    Unavailable(ErrorBody),
     #[response(status = 500, description = "Session operation failed")]
     Internal(ErrorBody),
 }
@@ -28,19 +26,16 @@ impl AuthError {
             error: "authentication required",
         })
     }
+
     pub fn forbidden() -> Self {
         Self::Forbidden(ErrorBody {
             error: "access denied",
         })
     }
+
     pub fn invalid() -> Self {
         Self::Invalid(ErrorBody {
             error: "invalid authentication request",
-        })
-    }
-    pub fn unavailable() -> Self {
-        Self::Unavailable(ErrorBody {
-            error: "authentication unavailable",
         })
     }
 }
@@ -60,9 +55,9 @@ impl IntoResponse for AuthError {
             Self::Invalid(body) => (StatusCode::BAD_REQUEST, body),
             Self::Unauthorized(body) => (StatusCode::UNAUTHORIZED, body),
             Self::Forbidden(body) => (StatusCode::FORBIDDEN, body),
-            Self::Unavailable(body) => (StatusCode::SERVICE_UNAVAILABLE, body),
             Self::Internal(body) => (StatusCode::INTERNAL_SERVER_ERROR, body),
         };
+
         (status, Json(body)).into_response()
     }
 }
@@ -115,7 +110,6 @@ impl IntoResponse for FlowResponse {
 pub struct SessionBody {
     pub user: Option<User>,
     pub csrf_token: Option<String>,
-    pub login_enabled: bool,
 }
 
 #[derive(IntoResponses)]
@@ -126,6 +120,7 @@ pub enum SessionResponse {
     )]
     Success(SessionBody),
 }
+
 impl IntoResponse for SessionResponse {
     fn into_response(self) -> Response {
         match self {
@@ -148,6 +143,7 @@ pub enum LogoutResponse {
     )]
     Success(LogoutBody),
 }
+
 impl IntoResponse for LogoutResponse {
     fn into_response(self) -> Response {
         match self {
@@ -166,6 +162,7 @@ mod tests {
         let internal = AuthError::from(tower_sessions::session::Error::Store(
             tower_sessions::session_store::Error::Backend("private backend details".into()),
         ));
+
         for (error, status, message) in [
             (
                 AuthError::invalid(),
@@ -183,11 +180,6 @@ mod tests {
                 "access denied",
             ),
             (
-                AuthError::unavailable(),
-                StatusCode::SERVICE_UNAVAILABLE,
-                "authentication unavailable",
-            ),
-            (
                 internal,
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "session unavailable",
@@ -196,6 +188,7 @@ mod tests {
             let response = error.into_response();
             assert_eq!(response.status(), status);
             assert_eq!(response.headers()["content-type"], "application/json");
+
             let bytes = response.into_body().collect().await.unwrap().to_bytes();
             assert_eq!(
                 serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),

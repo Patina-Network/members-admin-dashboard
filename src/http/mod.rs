@@ -19,7 +19,7 @@ use axum::{
     routing::{get, post},
 };
 use serde::Serialize;
-use tower_http::catch_panic::CatchPanicLayer;
+use tower_http::catch_panic::{self};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
@@ -49,12 +49,14 @@ pub fn app(state: AppState) -> Router {
                 .delete(members::archive),
         )
         .fallback(not_found);
+
     let mut router = Router::new();
     if state.config.enable_documentation {
         router = router.merge(
             SwaggerUi::new("/api/swagger-ui").url("/api/openapi.json", openapi::ApiDoc::openapi()),
         );
     }
+
     router
         .route("/livez", get(health::live))
         .route("/readyz", get(health::ready))
@@ -67,11 +69,10 @@ pub fn app(state: AppState) -> Router {
             state.clone(),
             auth::guard::protect,
         ))
-        .layer(CatchPanicLayer::custom(panic_response))
+        .layer(catch_panic::CatchPanicLayer::custom(panic_response))
         .with_state(state)
 }
 
-/// A panicking handler answers 500 with the usual `ErrorBody` instead of dropping the connection.
 fn panic_response(panic: Box<dyn Any + Send + 'static>) -> Response {
     let detail = panic
         .downcast_ref::<String>()

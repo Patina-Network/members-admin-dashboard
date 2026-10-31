@@ -57,6 +57,7 @@ export default function TransitionalButtons({
     opacity: 0,
     textColor: defaultStyle.color,
   });
+
   const [hoveredButton, setHoveredButton] = useState<LinkTo | null>(null);
   const parentRef = useRef<HTMLDivElement>(null);
   const buttonRefs = useRef<Map<LinkTo, HTMLAnchorElement>>(new Map());

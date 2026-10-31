@@ -12,8 +12,10 @@ export function validateSocialUsername(value: string) {
 
 export function validateDiscordId(value: string, username: string) {
   const id = value.trim();
+
   if (!id)
     return username.trim() ? "Discord ID is required with a username" : null;
+
   return (
       /^\d+$/.test(id) && BigInt(id) > 0n && BigInt(id) <= 18446744073709551615n
     ) ?

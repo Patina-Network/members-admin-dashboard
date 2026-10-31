@@ -21,6 +21,7 @@ export default function AddMembersModal({
   const addMember = useAddMemberMutation();
   const form = useMemberForm();
   const submittingRef = useRef(false);
+
   const close = () => {
     if (submittingRef.current || bulkPending) return;
     setBulk(false);
@@ -29,9 +30,11 @@ export default function AddMembersModal({
     form.reset();
     addMember.reset();
   };
+
   const onSubmit = (values: NewMember) => {
     if (submittingRef.current || bulkPending) return;
     submittingRef.current = true;
+
     addMember.mutate(values, {
       onSuccess: (member) => {
         onCreated(member);

@@ -8,6 +8,7 @@ export default function AuthControls() {
   const { data, isPending, isError, refetch } = useAuthQuery();
 
   if (isPending) return <Loader size="sm" aria-label="Checking session" />;
+
   if (isError) {
     return (
       <Button variant="subtle" onClick={() => void refetch()}>
@@ -15,6 +16,7 @@ export default function AuthControls() {
       </Button>
     );
   }
+
   if (data.user && data.csrfToken) {
     return (
       <Group justify="center">
@@ -23,6 +25,7 @@ export default function AuthControls() {
       </Group>
     );
   }
+
   return (
     <Button component={Link} to="/login">
       Sign in

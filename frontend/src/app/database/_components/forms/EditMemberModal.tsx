@@ -37,9 +37,11 @@ function EditMemberForm({ member, onClose }: EditMemberFormProps) {
   const { form, changedFields } = useEditMemberForm(member);
   const update = useUpdateMemberMutation();
   const submitting = useRef(false);
+
   const submit = (values: NewMember) => {
     if (submitting.current) return;
     submitting.current = true;
+
     update.mutate(
       {
         memberId: member.member_id,
@@ -56,6 +58,7 @@ function EditMemberForm({ member, onClose }: EditMemberFormProps) {
       },
     );
   };
+
   return (
     <Modal
       opened

@@ -50,6 +50,7 @@ async function fetchMemberDetails(memberId: number, signal: AbortSignal) {
       throw new Error("Unable to load member details. Please try again.");
     },
   );
+
   if (!result.data) {
     const status = result.response?.status;
     throw new Error(
@@ -59,18 +60,22 @@ async function fetchMemberDetails(memberId: number, signal: AbortSignal) {
       : "Unable to load member details. Please try again.",
     );
   }
+
   return result.data;
 }
 
 export const useAddMemberMutation = () => {
   const queryClient = useQueryClient();
+
   return useMutation({
     retry: false,
     mutationFn: createMember,
     onSuccess: async (member) => {
       await queryClient.cancelQueries({ queryKey: membersKey });
+
       queryClient.setQueryData<MemberList>(membersKey, (current) => {
         if (!current) return { members: [member], total: 1 };
+
         if (current.members.some((row) => row.member_id === member.member_id)) {
           return {
             ...current,
@@ -79,12 +84,14 @@ export const useAddMemberMutation = () => {
             ),
           };
         }
+
         return {
           ...current,
           members: [member, ...current.members],
           total: current.total + 1,
         };
       });
+
       void queryClient.invalidateQueries({ queryKey: membersKey });
     },
   });
@@ -92,22 +99,27 @@ export const useAddMemberMutation = () => {
 
 async function fetchMembers(signal: AbortSignal) {
   const result = await list({ signal });
+
   if (!result.data) {
     throw new Error(result.error?.error ?? "Unable to load members");
   }
+
   return result.data;
 }
 
 async function getAdminCsrfToken(action: "adding" | "updating" | "archiving") {
   const { data: session } = await currentSession();
+
   if (!session) {
     throw new Error("Unable to check your session. Please try again.");
   }
+
   if (!session.user?.isAdmin || !session.csrfToken) {
     throw new Error(
       `Please sign in with an admin account before ${action} members.`,
     );
   }
+
   return session.csrfToken;
 }
 
@@ -119,21 +131,25 @@ async function createMember(body: NewMember) {
   }).catch(() => {
     throw new Error(uncertainWriteMessage);
   });
+
   if (!result.data) {
     if (!result.response || result.response.status >= 500) {
       throw new Error(uncertainWriteMessage);
     }
+
     throw new Error(
       result.response.status === 409 ?
         "A member with this email or social account already exists."
       : (result.error?.error ?? "Unable to add member. Please try again."),
     );
   }
+
   return result.data;
 }
 
 export const useUpdateMemberMutation = () => {
   const queryClient = useQueryClient();
+
   return useMutation({
     retry: false,
     mutationFn: async ({
@@ -153,6 +169,7 @@ export const useUpdateMemberMutation = () => {
           "Could not confirm whether the member was updated. Reload before trying again.",
         );
       });
+
       if (!result.data) {
         throw new Error(
           !result.response || result.response.status >= 500 ?
@@ -167,10 +184,12 @@ export const useUpdateMemberMutation = () => {
           : (result.error?.error ?? "Unable to update member."),
         );
       }
+
       return result.data;
     },
     onSuccess: async (member: Member) => {
       await queryClient.cancelQueries({ queryKey: membersKey });
+
       queryClient.setQueryData<MemberList>(membersKey, (current) =>
         current ?
           {
@@ -181,6 +200,7 @@ export const useUpdateMemberMutation = () => {
           }
         : current,
       );
+
       void queryClient.invalidateQueries({ queryKey: membersKey });
     },
   });
@@ -188,11 +208,13 @@ export const useUpdateMemberMutation = () => {
 
 export const useArchiveMemberMutation = () => {
   const queryClient = useQueryClient();
+
   return useMutation({
     retry: false,
     mutationFn: async (memberId: number) => {
       const uncertain =
         "Could not confirm whether the member was archived. Reload before trying again.";
+
       const csrfToken = await getAdminCsrfToken("archiving");
       const result = await archive({
         path: { member_id: memberId },
@@ -200,6 +222,7 @@ export const useArchiveMemberMutation = () => {
       }).catch(() => {
         throw new Error(uncertain);
       });
+
       if (result.response?.status !== 204) {
         throw new Error(
           !result.response || result.response.status >= 500 ?
@@ -207,17 +230,21 @@ export const useArchiveMemberMutation = () => {
           : (result.error?.error ?? "Unable to archive member."),
         );
       }
+
       return memberId;
     },
     onSuccess: async (memberId) => {
       await queryClient.cancelQueries({ queryKey: membersKey });
+
       queryClient.setQueryData<MemberList>(membersKey, (current) => {
         if (!current) return current;
+
         const members = current.members.filter(
           (row) => row.member_id !== memberId,
         );
         return { members, total: members.length };
       });
+
       void queryClient.invalidateQueries({ queryKey: membersKey });
     },
   });
@@ -225,11 +252,13 @@ export const useArchiveMemberMutation = () => {
 
 export const useBulkAddMembersMutation = () => {
   const queryClient = useQueryClient();
+
   return useMutation({
     retry: false,
     mutationFn: async (members: NewMember[]) => {
       const uncertain =
         "Could not confirm import results. Refresh before retrying.";
+
       const csrfToken = await getAdminCsrfToken("adding");
       const result = await bulkCreate({
         body: { members },
@@ -237,20 +266,24 @@ export const useBulkAddMembersMutation = () => {
       }).catch(() => {
         throw new Error(uncertain);
       });
+
       if (!result.data)
         throw new Error(
           !result.response || result.response.status >= 500 ?
             uncertain
           : (result.error?.error ?? "Unable to import members."),
         );
+
       return result.data;
     },
     onSettled: async (data) => {
       await queryClient.cancelQueries({ queryKey: membersKey });
+
       const imported = new Map<number, Member>();
       for (const result of data?.results ?? []) {
         if (result.member) imported.set(result.member.member_id, result.member);
       }
+
       if (imported.size) {
         queryClient.setQueryData<MemberList>(membersKey, (current) => {
           const existing = current?.members ?? [];
@@ -260,6 +293,7 @@ export const useBulkAddMembersMutation = () => {
           const added = [...imported.values()].filter(
             (member) => !existingIds.has(member.member_id),
           );
+
           return {
             ...current,
             members: [
@@ -272,6 +306,7 @@ export const useBulkAddMembersMutation = () => {
           };
         });
       }
+
       void queryClient.invalidateQueries({ queryKey: membersKey });
     },
   });

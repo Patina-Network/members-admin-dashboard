@@ -47,6 +47,7 @@ mod tests {
                             "unresolved {reference}"
                         );
                     }
+
                     for value in fields.values() {
                         check(value, document);
                     }
@@ -59,6 +60,7 @@ mod tests {
                 _ => {}
             }
         }
+
         let document = serde_json::to_value(ApiDoc::openapi()).unwrap();
         check(&document, &document);
     }

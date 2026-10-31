@@ -124,10 +124,9 @@ just run
 Use `APP_ORIGIN=http://localhost:5173` while using Vite, or
 `http://localhost:8080` when opening the built app directly. Redirects and origin
 checks use this configured value, never incoming Host/forwarded headers. HTTP
-is allowed only for loopback development. Staging/production require HTTPS and
-complete Azure configuration. With no Azure configuration in development,
-Home and docs work, login is unavailable, and protected routes still deny access.
-Partial configuration fails startup.
+is allowed only for loopback development. Staging/production require HTTPS.
+Azure configuration is required in every environment; missing or invalid
+values fail startup.
 
 Sessions use an opaque HttpOnly, SameSite=Lax cookie, with Secure and the
 `__Host-` prefix on HTTPS. Sessions expire at the earlier of the ID token's
@@ -222,11 +221,11 @@ published member API; no member RPCs are invoked by the setup scaffold.
 | `MEMBERS_ADMIN_SERVICE_GRPC_HOST` | `members-admin-grpc-service:50051` | Upstream host and port |
 | `MEMBERS_ADMIN_SERVICE_GRPC_TLS` | `false` | Enable TLS with native roots |
 | `MEMBERS_ADMIN_SERVICE_GRPC_TIMEOUT_MS` | `3000` | Connection and request timeout |
-| `AZURE_TENANT_ID` | unset | Single-tenant Azure directory UUID |
-| `AZURE_CLIENT_ID` | unset | Azure Web application client UUID |
-| `AZURE_CLIENT_SECRET` | unset | Backend-only client secret |
+| `AZURE_TENANT_ID` | required | Single-tenant Azure directory UUID |
+| `AZURE_CLIENT_ID` | required | Azure Web application client UUID |
+| `AZURE_CLIENT_SECRET` | required | Backend-only client secret |
 | `AZURE_ADMIN_EMAILS` | Empty (deny all) | Comma-separated Microsoft sign-in emails allowed admin access |
-| `APP_ORIGIN` | unset | Public application origin, including port in development |
+| `APP_ORIGIN` | required | Public application origin, including port in development |
 | `ENABLE_DOCUMENTATION` | `true` | Serve Swagger UI and OpenAPI routes |
 | `HTTP_PORT` | `8080` | HTTP port; binds `0.0.0.0` |
 | `VERSION` | unset | `/version` returns this, or `N/A` |

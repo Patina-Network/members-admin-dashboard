@@ -2,10 +2,10 @@ import { SonarScannerClient } from "@tahminator/pipeline";
 import { $ } from "bun";
 
 import { exclusions } from "../../../../exclusions";
-import { SONAR_ORGANIZATION, SONAR_PROJECT_KEY } from "../consts";
+import { requiredEnv, SONAR_ORGANIZATION, SONAR_PROJECT_KEY } from "../consts";
 
 async function main() {
-  const { sonarToken } = parseCiEnv(process.env);
+  const sonarToken = requiredEnv("SONAR_TOKEN");
 
   const sonarClient = new SonarScannerClient({
     auth: {
@@ -27,18 +27,6 @@ async function main() {
 
   await sonarClient.runTests();
   await sonarClient.uploadTestCoverage();
-}
-
-function parseCiEnv(ciEnv: Record<string, string | undefined>) {
-  const sonarToken = (() => {
-    const v = ciEnv["SONAR_TOKEN"];
-    if (!v) {
-      throw new Error("Missing SONAR_TOKEN from .env.ci");
-    }
-    return v;
-  })();
-
-  return { sonarToken };
 }
 
 main()

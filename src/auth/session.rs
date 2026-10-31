@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 use time::{Duration, OffsetDateTime};
 use tower_sessions::{Expiry, Session, SessionManagerLayer, SessionStore, cookie::SameSite};
 
-use super::{config::AuthConfig, store::ExpiringMemoryStore};
+use super::store::ExpiringMemoryStore;
+use crate::config::AuthConfig;
 
 pub const PRINCIPAL_KEY: &str = "principal";
 pub const LOGIN_KEY: &str = "login";
@@ -49,6 +50,7 @@ pub async fn principal(
     session: &Session,
 ) -> Result<Option<Principal>, tower_sessions::session::Error> {
     let principal: Option<Principal> = session.get(PRINCIPAL_KEY).await?;
+
     match principal {
         Some(principal) if principal.expires_at > OffsetDateTime::now_utc().unix_timestamp() => {
             Ok(Some(principal))
@@ -67,6 +69,7 @@ pub async fn establish(
 ) -> Result<(), tower_sessions::session::Error> {
     session.flush().await?;
     session.cycle_id().await?;
+
     session.set_expiry(Some(Expiry::AtDateTime(
         OffsetDateTime::from_unix_timestamp(principal.expires_at).expect("validated token expiry"),
     )));
@@ -88,9 +91,10 @@ fn layer<S: SessionStore>(store: S, secure: bool) -> SessionManagerLayer<S> {
         .with_expiry(Expiry::OnInactivity(Duration::minutes(10)))
 }
 
-pub fn with_sessions(router: Router, config: Option<&AuthConfig>) -> Router {
-    let secure = config.is_some_and(AuthConfig::secure_cookie);
+pub fn with_sessions(router: Router, config: &AuthConfig) -> Router {
+    let secure = config.secure_cookie();
     tracing::warn!("sessions are stored in memory; restarting clears logins");
+
     router.layer(layer(ExpiringMemoryStore::default(), secure))
 }
 
@@ -129,11 +133,14 @@ mod tests {
     async fn authenticated_app(admin: bool) -> (Router, String, Session) {
         let store = ExpiringMemoryStore::default();
         let session = Session::new(None, Arc::new(store.clone()), None);
+
         let mut principal = user(OffsetDateTime::now_utc().unix_timestamp() + 60);
         principal.user.is_admin = admin;
         establish(&session, principal).await.unwrap();
+
         let cookie = format!("members_session={}", session.id().unwrap());
         let router = app(test_state()).layer(layer(store, false));
+
         (router, cookie, session)
     }
 
@@ -147,6 +154,7 @@ mod tests {
                 origin: origin.parse().unwrap(),
                 admin_emails: vec![],
             };
+
             let router = Router::new().route(
                 "/",
                 axum::routing::get(|session: Session| async move {
@@ -154,14 +162,9 @@ mod tests {
                     "ok"
                 }),
             );
-            let response = request(
-                with_sessions(router, Some(&config)),
-                Method::GET,
-                "/",
-                "",
-                "",
-            )
-            .await;
+
+            let response = request(with_sessions(router, &config), Method::GET, "/", "", "").await;
+
             let cookie = response.headers()[header::SET_COOKIE].to_str().unwrap();
             assert!(cookie.contains("HttpOnly"));
             assert!(cookie.contains("SameSite=Lax"));
@@ -177,9 +180,11 @@ mod tests {
     #[tokio::test]
     async fn callback_routes_apply_auth_response_headers() {
         let router = app(test_state()).layer(layer(ExpiringMemoryStore::default(), false));
+
         for path in ["/oauth2/callback", "/api/auth/callback"] {
             let response = request(router.clone(), Method::GET, path, "", "").await;
-            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+            assert_eq!(response.status(), StatusCode::SEE_OTHER);
             assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
             assert_eq!(response.headers()[header::REFERRER_POLICY], "no-referrer");
         }
@@ -188,16 +193,19 @@ mod tests {
     #[tokio::test]
     async fn http_routes_require_login_before_serving_database_or_member_api() {
         let router = app(test_state()).layer(layer(ExpiringMemoryStore::default(), false));
+
         for path in ["/", "/login", "/api/auth/session", "/livez"] {
             let response = request(router.clone(), Method::GET, path, "", "").await;
             assert_eq!(response.status(), StatusCode::OK, "{path}");
         }
+
         for path in ["/database", "/database/members"] {
             let response = request(router.clone(), Method::GET, path, "", "").await;
             assert_eq!(response.status(), StatusCode::SEE_OTHER);
             assert_eq!(response.headers()[header::LOCATION], "/login");
             assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
         }
+
         for method in [Method::GET, Method::POST, Method::PATCH, Method::DELETE] {
             for path in ["/api/members", "/api/members/42"] {
                 let response = request(router.clone(), method.clone(), path, "", "").await;
@@ -210,17 +218,21 @@ mod tests {
     #[tokio::test]
     async fn http_routes_enforce_admin_and_csrf_with_a_real_session_cookie() {
         let (router, cookie, _) = authenticated_app(false).await;
+
         let response = request(router.clone(), Method::GET, "/database", &cookie, "").await;
         assert_eq!(
             response.headers()[header::LOCATION],
             "/login?error=forbidden"
         );
+
         let response = request(router, Method::GET, "/api/members", &cookie, "").await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
         let (router, cookie, _) = authenticated_app(true).await;
+
         let response = request(router.clone(), Method::GET, "/database", &cookie, "").await;
         assert_eq!(response.status(), StatusCode::OK);
+
         for method in [Method::POST, Method::PUT, Method::PATCH, Method::DELETE] {
             let response = request(
                 router.clone(),
@@ -231,6 +243,7 @@ mod tests {
             )
             .await;
             assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
             let expected = if method == Method::POST {
                 StatusCode::BAD_REQUEST
             } else {
@@ -244,6 +257,7 @@ mod tests {
     #[tokio::test]
     async fn http_logout_deletes_cookie_and_rejects_replayed_session() {
         let (router, cookie, _) = authenticated_app(true).await;
+
         let response = request(
             router.clone(),
             Method::POST,
@@ -253,6 +267,7 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
         let response = request(
             router.clone(),
             Method::POST,
@@ -262,9 +277,11 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
+
         let cookie_header = response.headers()[header::SET_COOKIE].to_str().unwrap();
         assert!(cookie_header.contains("members_session="));
         assert!(cookie_header.contains("Max-Age=0"));
+
         let response = request(router, Method::GET, "/api/members", &cookie, "").await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
@@ -274,6 +291,7 @@ mod tests {
         let (router, cookie, session) = authenticated_app(true).await;
         session.insert(PRINCIPAL_KEY, user(0)).await.unwrap();
         session.save().await.unwrap();
+
         let response = request(router, Method::GET, "/api/members", &cookie, "").await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
@@ -294,12 +312,14 @@ mod tests {
     async fn expires_and_revokes_sessions() {
         let store = Arc::new(ExpiringMemoryStore::default());
         let session = Session::new(None, store.clone(), None);
+
         establish(
             &session,
             user(OffsetDateTime::now_utc().unix_timestamp() + 60),
         )
         .await
         .unwrap();
+
         let id = session.id();
         assert!(
             principal(&Session::new(id, store.clone(), None))
@@ -307,6 +327,7 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+
         session.flush().await.unwrap();
         assert!(
             principal(&Session::new(id, store.clone(), None))
@@ -314,6 +335,7 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+
         session.insert(PRINCIPAL_KEY, user(0)).await.unwrap();
         assert!(principal(&session).await.unwrap().is_none());
     }
@@ -322,15 +344,18 @@ mod tests {
     async fn login_replaces_the_old_session_id() {
         let store = Arc::new(ExpiringMemoryStore::default());
         let session = Session::new(None, store.clone(), None);
+
         session.insert("old", "value").await.unwrap();
         session.save().await.unwrap();
         let old_id = session.id();
+
         establish(
             &session,
             user(OffsetDateTime::now_utc().unix_timestamp() + 60),
         )
         .await
         .unwrap();
+
         assert_ne!(session.id(), old_id);
         assert!(
             Session::new(old_id, store, None)
@@ -349,9 +374,11 @@ mod tests {
             verifier: "verifier".into(),
             expires_at: 100,
         };
+
         assert!(attempt.valid("state", 99));
         assert!(!attempt.valid("other", 99));
         assert!(!attempt.valid("state", 100));
+
         assert!(user(100).valid_csrf("csrf"));
         assert!(!user(100).valid_csrf("other"));
     }

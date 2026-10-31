@@ -8,35 +8,36 @@ use tower_sessions::Session;
 
 use super::response::AuthError;
 use crate::{
-    auth::{
-        config::AuthConfig,
-        session::{self, Principal},
-    },
+    auth::session::{self, Principal},
+    config::AuthConfig,
     http::state::AppState,
 };
 
 pub fn check_csrf(
     principal: &Principal,
     headers: &HeaderMap,
-    config: Option<&AuthConfig>,
+    config: &AuthConfig,
 ) -> Result<(), AuthError> {
     let token = headers
         .get("x-csrf-token")
         .and_then(|v| v.to_str().ok())
         .ok_or_else(AuthError::forbidden)?;
+
     if !principal.valid_csrf(token) {
         return Err(AuthError::forbidden());
     }
+
     check_origin(headers, config)
 }
 
-pub fn check_origin(headers: &HeaderMap, config: Option<&AuthConfig>) -> Result<(), AuthError> {
+pub fn check_origin(headers: &HeaderMap, config: &AuthConfig) -> Result<(), AuthError> {
     if let Some(origin) = headers.get(header::ORIGIN) {
-        let expected = config.map(|c| c.origin.origin().ascii_serialization());
-        if origin.to_str().ok() != expected.as_deref() {
+        let expected = config.origin.origin().ascii_serialization();
+        if origin.to_str().ok() != Some(expected.as_str()) {
             return Err(AuthError::forbidden());
         }
     }
+
     Ok(())
 }
 
@@ -60,17 +61,20 @@ pub async fn authorize(
     session: &Session,
     method: &Method,
     headers: &HeaderMap,
-    config: Option<&AuthConfig>,
+    config: &AuthConfig,
 ) -> Result<Principal, AuthError> {
     let principal = session::principal(session)
         .await?
         .ok_or_else(AuthError::unauthorized)?;
+
     if !principal.user.is_admin {
         return Err(AuthError::forbidden());
     }
+
     if !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
         check_csrf(&principal, headers, config)?;
     }
+
     Ok(principal)
 }
 
@@ -84,12 +88,13 @@ pub async fn protect(
     let database = is_database(path);
     let api = path == "/api" || path.starts_with("/api/");
     let callback = path == "/oauth2/callback";
+
     let mut response = if database || (api && !is_public_api(path)) {
         match authorize(
             &session,
             request.method(),
             request.headers(),
-            state.auth.as_ref().map(|p| &p.config),
+            &state.auth.config,
         )
         .await
         {
@@ -106,6 +111,7 @@ pub async fn protect(
     } else {
         next.run(request).await
     };
+
     if api || database || callback {
         response
             .headers_mut()
@@ -115,13 +121,17 @@ pub async fn protect(
             HeaderValue::from_static("no-referrer"),
         );
     }
+
     response
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::session::{PRINCIPAL_KEY, User};
+    use crate::{
+        auth::session::{PRINCIPAL_KEY, User},
+        http::state::test_state,
+    };
     use axum::http::StatusCode;
     use std::sync::Arc;
     use time::OffsetDateTime;
@@ -130,12 +140,15 @@ mod tests {
     #[tokio::test]
     async fn enforces_login_admin_and_csrf() {
         let session = Session::new(None, Arc::new(MemoryStore::default()), None);
+        let config = test_state().config.auth;
         let mut headers = HeaderMap::new();
-        let denied = authorize(&session, &Method::GET, &headers, None)
+
+        let denied = authorize(&session, &Method::GET, &headers, &config)
             .await
             .err()
             .unwrap();
         assert_eq!(denied.into_response().status(), StatusCode::UNAUTHORIZED);
+
         let mut principal = Principal {
             user: User {
                 id: "test".into(),
@@ -147,34 +160,38 @@ mod tests {
         };
         session.insert(PRINCIPAL_KEY, &principal).await.unwrap();
         assert!(matches!(
-            authorize(&session, &Method::GET, &headers, None).await,
+            authorize(&session, &Method::GET, &headers, &config).await,
             Err(AuthError::Forbidden(_))
         ));
+
         principal.user.is_admin = true;
         session.insert(PRINCIPAL_KEY, &principal).await.unwrap();
         assert!(
-            authorize(&session, &Method::GET, &headers, None)
+            authorize(&session, &Method::GET, &headers, &config)
                 .await
                 .is_ok()
         );
+
         for method in [Method::POST, Method::PUT, Method::PATCH, Method::DELETE] {
             assert!(matches!(
-                authorize(&session, &method, &headers, None).await,
+                authorize(&session, &method, &headers, &config).await,
                 Err(AuthError::Forbidden(_))
             ));
         }
+
         headers.insert("x-csrf-token", HeaderValue::from_static("token"));
         assert!(
-            authorize(&session, &Method::POST, &headers, None)
+            authorize(&session, &Method::POST, &headers, &config)
                 .await
                 .is_ok()
         );
+
         headers.insert(
             header::ORIGIN,
             HeaderValue::from_static("https://attacker.example"),
         );
         assert!(matches!(
-            authorize(&session, &Method::POST, &headers, None).await,
+            authorize(&session, &Method::POST, &headers, &config).await,
             Err(AuthError::Forbidden(_))
         ));
     }
@@ -189,6 +206,7 @@ mod tests {
         ] {
             assert!(!is_public_api(path));
         }
+
         assert!(is_database("/database"));
         assert!(is_database("/database/members"));
         assert!(!is_database("/database-other"));
