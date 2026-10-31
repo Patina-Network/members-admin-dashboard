@@ -192,6 +192,7 @@ mod tests {
         for path in [
             "/api/members",
             "/api/members/42",
+            "/api/suggestions/careers",
             "/api/auth/other",
             "/api/auth/session/extra",
         ] {

@@ -6,6 +6,7 @@ mod health;
 mod members;
 mod metrics;
 mod spa;
+mod suggestions;
 mod version;
 
 use std::any::Any;
@@ -47,6 +48,11 @@ pub fn app(state: AppState) -> Router {
             get(members::details)
                 .put(members::update)
                 .delete(members::archive),
+        )
+        .route("/suggestions/careers", get(suggestions::career_suggestions))
+        .route(
+            "/suggestions/industries",
+            get(suggestions::industry_suggestions),
         )
         .fallback(not_found);
 

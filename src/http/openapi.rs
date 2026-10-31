@@ -13,7 +13,9 @@ use utoipa::OpenApi;
         super::auth::logout,
         super::members::update,
         super::members::details,
-        super::members::archive
+        super::members::archive,
+        super::suggestions::career_suggestions,
+        super::suggestions::industry_suggestions
     ),
     components(schemas(
         super::ErrorBody,
@@ -24,7 +26,8 @@ use utoipa::OpenApi;
         super::auth::response::SessionBody,
         super::auth::response::LogoutBody,
         crate::auth::session::User,
-        super::members::MemberUpdate
+        super::members::MemberUpdate,
+        super::suggestions::SuggestionList
     ))
 )]
 pub struct ApiDoc;

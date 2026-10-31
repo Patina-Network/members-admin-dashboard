@@ -8,6 +8,7 @@ import {
 
 import type { MemberFieldsProps } from "@/app/database/_components/shared/types";
 
+import SuggestionField from "@/app/database/_components/forms/SuggestionField";
 import { roleOptions } from "@/app/database/_components/shared/memberRoles";
 
 export default function MemberFields({
@@ -83,13 +84,17 @@ export default function MemberFields({
                 label="Instagram Username"
                 disabled={pending}
               />
-              <TextInput
-                {...form.getInputProps("career")}
+              <SuggestionField
+                form={form}
+                field="career"
+                kind="careers"
                 label="Career"
                 disabled={pending}
               />
-              <TextInput
-                {...form.getInputProps("industry")}
+              <SuggestionField
+                form={form}
+                field="industry"
+                kind="industries"
                 label="Industry"
                 disabled={pending}
               />

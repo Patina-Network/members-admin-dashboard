@@ -19,9 +19,11 @@ import DatabasePage from "@/app/database/Database.page";
 import {
   archive,
   bulkCreate,
+  careerSuggestions,
   create,
   currentSession,
   details,
+  industrySuggestions,
   list,
   update,
 } from "@/lib/api/generated/sdk.gen";
@@ -29,9 +31,11 @@ import {
 vi.mock("@/lib/api/generated/sdk.gen", () => ({
   archive: vi.fn(),
   bulkCreate: vi.fn(),
+  careerSuggestions: vi.fn(),
   create: vi.fn(),
   currentSession: vi.fn(),
   details: vi.fn(),
+  industrySuggestions: vi.fn(),
   update: vi.fn(),
   list: vi.fn(),
 }));
@@ -167,6 +171,16 @@ beforeEach(() => {
     request: new Request("http://localhost/api/members"),
     response,
   });
+  vi.mocked(careerSuggestions).mockResolvedValue({
+    data: { suggestions: [] },
+    request: new Request("http://localhost/api/suggestions/careers"),
+    response,
+  });
+  vi.mocked(industrySuggestions).mockResolvedValue({
+    data: { suggestions: [] },
+    request: new Request("http://localhost/api/suggestions/industries"),
+    response,
+  });
 });
 
 describe("add member", () => {
@@ -259,8 +273,14 @@ describe("add member", () => {
       screen.getByLabelText("Instagram Username"),
       " alex.rivera ",
     );
-    await user.type(screen.getByLabelText("Career"), " Engineer ");
-    await user.type(screen.getByLabelText("Industry"), " Technology ");
+    await user.type(
+      screen.getByRole("textbox", { name: "Career" }),
+      " Engineer ",
+    );
+    await user.type(
+      screen.getByRole("textbox", { name: "Industry" }),
+      " Technology ",
+    );
     await user.type(screen.getByLabelText("Profile notes"), " Private notes ");
 
     submitForm();
@@ -285,6 +305,67 @@ describe("add member", () => {
     await screen.findByLabelText(/^Email/);
     expect(screen.getByLabelText("LinkedIn Username")).toHaveValue("");
     expect(screen.getByLabelText("Profile notes")).toHaveValue("");
+  });
+
+  it("suggests careers and industries from the server and submits the pick", async () => {
+    vi.mocked(create).mockResolvedValue(savedMember());
+    vi.mocked(careerSuggestions).mockImplementation(async (options) => ({
+      data: {
+        suggestions:
+          options?.query?.query === "eng" ?
+            ["Engineering Manager", "Software Engineer"]
+          : [],
+      },
+      request: new Request("http://localhost/api/suggestions/careers"),
+      response,
+    }));
+    vi.mocked(industrySuggestions).mockResolvedValue({
+      data: undefined,
+      error: { error: "service unavailable" },
+      request: new Request("http://localhost/api/suggestions/industries"),
+      response: new Response(null, { status: 503 }),
+    });
+
+    renderPage();
+    const user = await openForm();
+    await fillForm(user);
+    await user.click(
+      screen.getByRole("button", { name: /Social & Professional/ }),
+    );
+
+    await user.type(
+      await screen.findByRole("textbox", { name: "Career" }),
+      "eng",
+    );
+    await user.click(
+      await screen.findByRole("option", { name: "Software Engineer" }),
+    );
+    expect(screen.getByRole("textbox", { name: "Career" })).toHaveValue(
+      "Software Engineer",
+    );
+
+    // A failed lookup leaves the field usable as free text.
+    await user.type(
+      screen.getByRole("textbox", { name: "Industry" }),
+      "Biotech",
+    );
+    await waitFor(() => expect(industrySuggestions).toHaveBeenCalled());
+    expect(
+      screen
+        .queryAllByRole("listbox")
+        .flatMap((listbox) => within(listbox).queryAllByRole("option")),
+    ).toEqual([]);
+
+    submitForm();
+    await waitFor(() =>
+      expect(create).toHaveBeenCalledWith({
+        headers: { "X-CSRF-Token": "test-csrf" },
+        body: expect.objectContaining({
+          career: "Software Engineer",
+          industry: "Biotech",
+        }),
+      }),
+    );
   });
 
   it.each([
@@ -642,7 +723,7 @@ describe("edit member", () => {
       screen.getByRole("button", { name: /Social & Professional/ }),
     );
     await user.clear(screen.getByLabelText("LinkedIn Username"));
-    await user.clear(screen.getByLabelText("Career"));
+    await user.clear(await screen.findByRole("textbox", { name: "Career" }));
     await user.clear(screen.getByLabelText("Profile notes"));
     await user.selectOptions(screen.getByLabelText("Role"), "");
 
@@ -694,8 +775,11 @@ describe("edit member", () => {
       screen.getByRole("button", { name: /Social & Professional/ }),
     );
     expect(screen.getByLabelText("LinkedIn Username")).toHaveValue("alex");
-    await user.clear(screen.getByLabelText("Career"));
-    await user.type(screen.getByLabelText("Career"), "Designer");
+    await user.clear(await screen.findByRole("textbox", { name: "Career" }));
+    await user.type(
+      screen.getByRole("textbox", { name: "Career" }),
+      "Designer",
+    );
     await user.clear(screen.getByLabelText("Profile notes"));
     await user.type(screen.getByLabelText("Profile notes"), "Updated notes");
     await user.selectOptions(screen.getByLabelText("Role"), "board");
