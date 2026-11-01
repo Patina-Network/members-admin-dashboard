@@ -234,7 +234,7 @@ pub(crate) fn test_keys() -> SessionKeys {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::{app, state::test_state};
+    use crate::http::state::{test_app, test_state};
     use axum::{
         Router,
         body::Body,
@@ -293,7 +293,7 @@ mod tests {
         }
         let cookie = session_header(&state.config.auth, &principal);
 
-        (app(state), cookie)
+        (test_app(), cookie)
     }
 
     #[tokio::test]
@@ -370,7 +370,7 @@ mod tests {
 
     #[tokio::test]
     async fn callback_routes_apply_auth_response_headers() {
-        let router = app(test_state());
+        let router = test_app();
 
         for path in ["/oauth2/callback", "/api/auth/callback"] {
             let response = request(router.clone(), Method::GET, path, "", "").await;
@@ -383,7 +383,7 @@ mod tests {
 
     #[tokio::test]
     async fn http_routes_require_login_before_serving_database_or_member_api() {
-        let router = app(test_state());
+        let router = test_app();
 
         for path in ["/", "/login", "/api/auth/session", "/livez"] {
             let response = request(router.clone(), Method::GET, path, "", "").await;
@@ -473,7 +473,7 @@ mod tests {
         let state = test_state();
         let cookie = session_header(&state.config.auth, &user(now() - 1));
 
-        let response = request(app(state), Method::GET, "/api/members", &cookie, "").await;
+        let response = request(test_app(), Method::GET, "/api/members", &cookie, "").await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 

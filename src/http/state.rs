@@ -42,3 +42,23 @@ pub(crate) fn test_state() -> AppState {
         },
     }
 }
+
+#[cfg(test)]
+pub(crate) fn test_auth() -> crate::http::auth::AuthApi {
+    let provider = crate::auth::provider::AzureProvider::new(test_state().config.auth).unwrap();
+    crate::http::auth::AuthApi::new(std::sync::Arc::new(provider))
+}
+
+#[cfg(test)]
+pub(crate) fn test_app() -> axum::Router {
+    use crate::grpc::fake::{FakeAdmin, FakeMembers};
+    use crate::http::{members::MembersApi, suggestions::SuggestionsApi};
+
+    let timeout = std::time::Duration::from_secs(1);
+    crate::http::app(
+        test_state(),
+        test_auth(),
+        MembersApi::new(FakeMembers::default(), FakeAdmin::default(), timeout),
+        SuggestionsApi::new(FakeMembers::default(), timeout),
+    )
+}

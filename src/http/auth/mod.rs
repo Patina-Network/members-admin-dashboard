@@ -162,7 +162,7 @@ mod tests {
     use super::*;
     use crate::{
         auth::session::{LoginAttempt, Principal, round_trip},
-        http::state::test_state,
+        http::state::{test_auth, test_state},
     };
     use axum::{
         http::{HeaderValue, StatusCode, header},
@@ -228,8 +228,8 @@ mod tests {
             (None, Some("code"), true),
             (Some("expected"), Some("code"), false),
         ] {
-            let state = test_state();
-            let config = state.auth.config.clone();
+            let state = test_auth();
+            let config = state.provider.config.clone();
             let jar = if has_attempt {
                 login_jar(&config)
             } else {
@@ -263,7 +263,7 @@ mod tests {
         let query = Query::<CallbackQuery>::from_request_parts(&mut parts, &()).await;
         assert!(query.is_err());
 
-        let response = callback(State(test_state()), CookieJar::new(), query)
+        let response = callback(State(test_auth()), CookieJar::new(), query)
             .await
             .err()
             .unwrap()
@@ -274,7 +274,7 @@ mod tests {
 
     #[tokio::test]
     async fn reports_signed_out_session() {
-        let response = current_session(State(test_state()), CookieJar::new())
+        let response = current_session(State(test_auth()), CookieJar::new())
             .await
             .into_response();
 
@@ -287,9 +287,9 @@ mod tests {
 
     #[tokio::test]
     async fn logout_requires_csrf_then_clears_the_session_cookie() {
-        let state = test_state();
+        let state = test_auth();
         let jar = round_trip(
-            &session::establish(CookieJar::new(), &state.auth.config, &principal()).unwrap(),
+            &session::establish(CookieJar::new(), &state.provider.config, &principal()).unwrap(),
         );
 
         assert!(matches!(
@@ -318,8 +318,8 @@ mod tests {
 
     #[tokio::test]
     async fn callback_rejects_invalid_state_and_consumes_the_login_attempt() {
-        let state = test_state();
-        let config = state.auth.config.clone();
+        let state = test_auth();
+        let config = state.provider.config.clone();
 
         let (jar, response) = callback(
             State(state),
@@ -345,8 +345,8 @@ mod tests {
 
     #[tokio::test]
     async fn cancelled_login_returns_a_safe_message_without_creating_a_session() {
-        let state = test_state();
-        let config = state.auth.config.clone();
+        let state = test_auth();
+        let config = state.provider.config.clone();
 
         let (jar, response) = callback(
             State(state),

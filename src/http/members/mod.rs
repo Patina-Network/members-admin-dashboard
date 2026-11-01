@@ -16,7 +16,10 @@ use members_grpc_service::members::{
 };
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::grpc::{self, MembersAdminGrpcClient, MembersGrpcClient, error::UpstreamError};
+use crate::{
+    grpc::{self, MembersAdminGrpcClient, MembersGrpcClient, error::UpstreamError},
+    util::{trim_string, trim_string_or_clear},
+};
 
 #[derive(Clone, Copy, Deserialize, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -73,8 +76,7 @@ impl TryFrom<NewMember> for CreateMemberRequest {
             return Err(UpstreamError::InvalidArgument);
         }
 
-        let joined_at = input
-            .joined_at
+        let joined_at = trim_string(input.joined_at)
             .map(|value| value.parse().map_err(|_| UpstreamError::InvalidArgument))
             .transpose()?;
 
@@ -83,13 +85,13 @@ impl TryFrom<NewMember> for CreateMemberRequest {
             first_name,
             last_name,
             joined_at,
-            discord_id: input.discord_id,
-            discord_username: input.discord_username,
-            linkedin_username: input.linkedin_username,
-            instagram_username: input.instagram_username,
-            career: input.career,
-            industry: input.industry,
-            profile: input.profile,
+            discord_id: trim_string(input.discord_id),
+            discord_username: trim_string(input.discord_username),
+            linkedin_username: trim_string(input.linkedin_username),
+            instagram_username: trim_string(input.instagram_username),
+            career: trim_string(input.career),
+            industry: trim_string(input.industry),
+            profile: trim_string(input.profile),
             role: input.role.map(Into::into),
         })
     }
@@ -149,10 +151,6 @@ where
     Option::<T>::deserialize(deserializer).map(Some)
 }
 
-fn update_string(value: Option<Option<String>>) -> Option<String> {
-    value.map(|value| value.unwrap_or_default())
-}
-
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MemberUpdate {
@@ -197,13 +195,13 @@ impl MemberUpdate {
             first_name: self.first_name.map(|v| v.trim().to_owned()),
             last_name: self.last_name.map(|v| v.trim().to_owned()),
             joined_at: None,
-            discord_id: update_string(self.discord_id),
-            discord_username: update_string(self.discord_username),
-            linkedin_username: update_string(self.linkedin_username),
-            instagram_username: update_string(self.instagram_username),
-            career: update_string(self.career),
-            industry: update_string(self.industry),
-            profile: update_string(self.profile),
+            discord_id: trim_string_or_clear(self.discord_id),
+            discord_username: trim_string_or_clear(self.discord_username),
+            linkedin_username: trim_string_or_clear(self.linkedin_username),
+            instagram_username: trim_string_or_clear(self.instagram_username),
+            career: trim_string_or_clear(self.career),
+            industry: trim_string_or_clear(self.industry),
+            profile: trim_string_or_clear(self.profile),
             role: self.role.map(|role| {
                 role.map(Into::into)
                     .unwrap_or(members::MemberRole::Unspecified as i32)
