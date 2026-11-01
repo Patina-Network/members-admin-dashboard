@@ -70,6 +70,7 @@ async function main() {
 
 ${tags.map((t) => `- \`${repository}:${t}\``).join("\n")}
 `,
+      key: `build-img-${arch}`,
     });
   }
 }
