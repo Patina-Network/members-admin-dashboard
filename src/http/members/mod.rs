@@ -1,24 +1,24 @@
 use std::{
     collections::{BTreeMap, HashSet},
-    future::Future,
     time::Duration,
 };
 
 use axum::{
-    Json,
-    extract::{Path, State, rejection::JsonRejection},
+    Json, Router,
+    extract::{DefaultBodyLimit, Path, State, rejection::JsonRejection},
     http::StatusCode,
     response::{IntoResponse, Response},
+    routing::{get, post},
 };
 use members_grpc_service::members::{
     self,
-    admin::{CreateMemberRequest, CreateMemberResponse, SensitiveMember},
+    admin::{CreateMemberRequest, SensitiveMember},
 };
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{
-    grpc::{self, error::UpstreamError},
-    http::state::AppState,
+    grpc::{self, MembersAdminGrpcClient, MembersGrpcClient, error::UpstreamError},
+    util::{trim_string, trim_string_or_clear},
 };
 
 #[derive(Clone, Copy, Deserialize, Serialize, utoipa::ToSchema)]
@@ -76,7 +76,7 @@ impl TryFrom<NewMember> for CreateMemberRequest {
             return Err(UpstreamError::InvalidArgument);
         }
 
-        let joined_at = optional(input.joined_at)
+        let joined_at = trim_string(input.joined_at)
             .map(|value| value.parse().map_err(|_| UpstreamError::InvalidArgument))
             .transpose()?;
 
@@ -85,13 +85,13 @@ impl TryFrom<NewMember> for CreateMemberRequest {
             first_name,
             last_name,
             joined_at,
-            discord_id: optional(input.discord_id),
-            discord_username: optional(input.discord_username),
-            linkedin_username: optional(input.linkedin_username),
-            instagram_username: optional(input.instagram_username),
-            career: optional(input.career),
-            industry: optional(input.industry),
-            profile: optional(input.profile),
+            discord_id: trim_string(input.discord_id),
+            discord_username: trim_string(input.discord_username),
+            linkedin_username: trim_string(input.linkedin_username),
+            instagram_username: trim_string(input.instagram_username),
+            career: trim_string(input.career),
+            industry: trim_string(input.industry),
+            profile: trim_string(input.profile),
             role: input.role.map(Into::into),
         })
     }
@@ -151,14 +151,6 @@ where
     Option::<T>::deserialize(deserializer).map(Some)
 }
 
-fn update_string(value: Option<Option<String>>) -> Option<String> {
-    value.map(|value| optional(value).unwrap_or_default())
-}
-
-fn optional(value: Option<String>) -> Option<String> {
-    value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty())
-}
-
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MemberUpdate {
@@ -203,13 +195,13 @@ impl MemberUpdate {
             first_name: self.first_name.map(|v| v.trim().to_owned()),
             last_name: self.last_name.map(|v| v.trim().to_owned()),
             joined_at: None,
-            discord_id: update_string(self.discord_id),
-            discord_username: update_string(self.discord_username),
-            linkedin_username: update_string(self.linkedin_username),
-            instagram_username: update_string(self.instagram_username),
-            career: update_string(self.career),
-            industry: update_string(self.industry),
-            profile: update_string(self.profile),
+            discord_id: trim_string_or_clear(self.discord_id),
+            discord_username: trim_string_or_clear(self.discord_username),
+            linkedin_username: trim_string_or_clear(self.linkedin_username),
+            instagram_username: trim_string_or_clear(self.instagram_username),
+            career: trim_string_or_clear(self.career),
+            industry: trim_string_or_clear(self.industry),
+            profile: trim_string_or_clear(self.profile),
             role: self.role.map(|role| {
                 role.map(Into::into)
                     .unwrap_or(members::MemberRole::Unspecified as i32)
@@ -235,57 +227,121 @@ impl IntoResponse for UpdateResponse {
     }
 }
 
-#[utoipa::path(put, path = "/api/members/{member_id}", params(("member_id" = i32, Path)), request_body = MemberUpdate, responses(UpdateResponse, UpstreamError))]
-pub async fn update(
-    State(state): State<AppState>,
-    Path(member_id): Path<i32>,
-    body: Result<Json<MemberUpdate>, JsonRejection>,
-) -> Result<UpdateResponse, UpstreamError> {
-    let mut client = state.client.clone();
-    let mut reader = state.client.clone();
-
-    checked_update_with(
-        member_id,
-        body,
-        state.config.members_admin_service_grpc_timeout,
-        |request| async move { reader.get_sensitive_member(request).await },
-        |request| async move { client.update_member(request).await },
-    )
-    .await
+#[derive(Clone)]
+pub struct MembersApi<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient> {
+    members_grpc_client: MGC,
+    members_admin_grpc_client: MAGC,
+    timeout: Duration,
 }
 
-async fn checked_update_with<R, RFut, W, WFut>(
-    member_id: i32,
-    body: Result<Json<MemberUpdate>, JsonRejection>,
-    timeout: Duration,
-    read: R,
-    write: W,
-) -> Result<UpdateResponse, UpstreamError>
-where
-    R: FnOnce(tonic::Request<members::GetMemberRequest>) -> RFut,
-    RFut: Future<
-        Output = Result<tonic::Response<members::admin::GetSensitiveMemberResponse>, tonic::Status>,
-    >,
-    W: FnOnce(tonic::Request<members::admin::UpdateMemberRequest>) -> WFut,
-    WFut: Future<
-        Output = Result<tonic::Response<members::admin::UpdateMemberResponse>, tonic::Status>,
-    >,
-{
-    let Json(body) = body.map_err(|_| UpstreamError::InvalidArgument)?;
-    let expected = body.expected_updated_at.clone();
-    let request = body.into_request(member_id)?;
+impl<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient> MembersApi<MGC, MAGC> {
+    pub fn new(
+        members_grpc_client: MGC,
+        members_admin_grpc_client: MAGC,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            members_grpc_client,
+            members_admin_grpc_client,
+            timeout,
+        }
+    }
 
-    let current = grpc::call_admin(
+    pub fn router<S: Clone + Send + Sync + 'static>(self) -> Router<S> {
+        Router::new()
+            .route("/members", get(list::<MGC, MAGC>).post(create::<MGC, MAGC>))
+            .route(
+                "/members/bulk",
+                post(bulk_create::<MGC, MAGC>).layer(DefaultBodyLimit::max(2 * 1024 * 1024)),
+            )
+            .route(
+                "/members/{member_id}",
+                get(details::<MGC, MAGC>)
+                    .put(update::<MGC, MAGC>)
+                    .delete(archive::<MGC, MAGC>),
+            )
+            .with_state(self)
+    }
+}
+
+async fn sensitive_member<MAGC: MembersAdminGrpcClient>(
+    mut client: MAGC,
+    timeout: Duration,
+    member_id: i32,
+) -> Result<SensitiveMember, UpstreamError> {
+    grpc::call_admin(
         timeout,
         members::GetMemberRequest {
             identifier: Some(members::get_member_request::Identifier::MemberId(member_id)),
         },
-        read,
+        |request| async move { client.get_sensitive_member(request).await },
     )
     .await?
     .member
-    .ok_or(UpstreamError::Failed)?;
+    .ok_or(UpstreamError::Failed)
+}
 
+async fn collect_members<MGC: MembersGrpcClient>(
+    client: MGC,
+    timeout: Duration,
+) -> Result<MemberList, UpstreamError> {
+    tokio::time::timeout(timeout, async {
+        let mut members = BTreeMap::new();
+        let mut page_token = String::new();
+        let mut seen = HashSet::new();
+
+        loop {
+            let mut client = client.clone();
+            let response = grpc::call(
+                timeout,
+                members::ListMembersRequest {
+                    include_archived: false,
+                    page_size: 100,
+                    page_token,
+                },
+                |request| async move { client.list_members(request).await },
+            )
+            .await?;
+
+            for member in response.members {
+                members.insert(member.member_id, Member::from(member));
+            }
+
+            page_token = response.next_page_token;
+            if page_token.is_empty() {
+                break;
+            }
+
+            if !seen.insert(page_token.clone()) {
+                return Err(UpstreamError::Failed);
+            }
+        }
+
+        let members: Vec<_> = members.into_values().collect();
+        Ok(MemberList {
+            total: members.len(),
+            members,
+        })
+    })
+    .await
+    .map_err(|_| UpstreamError::Timeout)?
+}
+
+#[utoipa::path(put, path = "/api/members/{member_id}", params(("member_id" = i32, Path)), request_body = MemberUpdate, responses(UpdateResponse, UpstreamError))]
+pub async fn update<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
+    State(MembersApi {
+        members_admin_grpc_client: client,
+        timeout,
+        ..
+    }): State<MembersApi<MGC, MAGC>>,
+    Path(member_id): Path<i32>,
+    body: Result<Json<MemberUpdate>, JsonRejection>,
+) -> Result<UpdateResponse, UpstreamError> {
+    let Json(body) = body.map_err(|_| UpstreamError::InvalidArgument)?;
+    let expected = body.expected_updated_at.clone();
+    let request = body.into_request(member_id)?;
+
+    let current = sensitive_member(client.clone(), timeout, member_id).await?;
     if current
         .updated_at
         .as_ref()
@@ -296,25 +352,15 @@ where
         return Err(UpstreamError::Conflict);
     }
 
-    send_update(request, timeout, write).await
-}
+    let mut client = client;
+    let member = grpc::call_admin(timeout, request, |request| async move {
+        client.update_member(request).await
+    })
+    .await?
+    .member
+    .ok_or(UpstreamError::Failed)?;
 
-async fn send_update<F, Fut>(
-    request: members::admin::UpdateMemberRequest,
-    timeout: Duration,
-    rpc: F,
-) -> Result<UpdateResponse, UpstreamError>
-where
-    F: FnOnce(tonic::Request<members::admin::UpdateMemberRequest>) -> Fut,
-    Fut: Future<
-        Output = Result<tonic::Response<members::admin::UpdateMemberResponse>, tonic::Status>,
-    >,
-{
-    let response = grpc::call_admin(timeout, request, rpc).await?;
-
-    Ok(UpdateResponse::Success(
-        response.member.ok_or(UpstreamError::Failed)?.into(),
-    ))
+    Ok(UpdateResponse::Success(member.into()))
 }
 
 #[derive(Debug, utoipa::IntoResponses)]
@@ -332,42 +378,26 @@ impl IntoResponse for ArchiveResponse {
 }
 
 #[utoipa::path(delete, path = "/api/members/{member_id}", params(("member_id" = i32, Path)), responses(ArchiveResponse, UpstreamError))]
-pub async fn archive(
-    State(state): State<AppState>,
+pub async fn archive<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
+    State(MembersApi {
+        members_admin_grpc_client: mut client,
+        timeout,
+        ..
+    }): State<MembersApi<MGC, MAGC>>,
     Path(member_id): Path<i32>,
 ) -> Result<ArchiveResponse, UpstreamError> {
-    let mut client = state.client.clone();
-
-    archive_with(
-        member_id,
-        state.config.members_admin_service_grpc_timeout,
-        |request| async move { client.archive_member(request).await },
-    )
-    .await
-}
-
-async fn archive_with<F, Fut>(
-    member_id: i32,
-    timeout: Duration,
-    rpc: F,
-) -> Result<ArchiveResponse, UpstreamError>
-where
-    F: FnOnce(tonic::Request<members::admin::ArchiveMemberRequest>) -> Fut,
-    Fut: Future<
-        Output = Result<tonic::Response<members::admin::ArchiveMemberResponse>, tonic::Status>,
-    >,
-{
     if member_id <= 0 {
         return Err(UpstreamError::InvalidArgument);
     }
 
-    let response = grpc::call_admin(
+    grpc::call_admin(
         timeout,
         members::admin::ArchiveMemberRequest { member_id },
-        rpc,
+        |request| async move { client.archive_member(request).await },
     )
-    .await?;
-    response.member.ok_or(UpstreamError::Failed)?;
+    .await?
+    .member
+    .ok_or(UpstreamError::Failed)?;
 
     Ok(ArchiveResponse::Success)
 }
@@ -454,46 +484,20 @@ impl IntoResponse for DetailsResponse {
 }
 
 #[utoipa::path(get, path = "/api/members/{member_id}", params(("member_id" = i32, Path)), responses(DetailsResponse, UpstreamError))]
-pub async fn details(
-    State(state): State<AppState>,
+pub async fn details<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
+    State(MembersApi {
+        members_admin_grpc_client: client,
+        timeout,
+        ..
+    }): State<MembersApi<MGC, MAGC>>,
     Path(member_id): Path<i32>,
 ) -> Result<DetailsResponse, UpstreamError> {
-    let mut client = state.client.clone();
-
-    details_with(
-        member_id,
-        state.config.members_admin_service_grpc_timeout,
-        |request| async move { client.get_sensitive_member(request).await },
-    )
-    .await
-}
-
-async fn details_with<F, Fut>(
-    member_id: i32,
-    timeout: Duration,
-    rpc: F,
-) -> Result<DetailsResponse, UpstreamError>
-where
-    F: FnOnce(tonic::Request<members::GetMemberRequest>) -> Fut,
-    Fut: Future<
-        Output = Result<tonic::Response<members::admin::GetSensitiveMemberResponse>, tonic::Status>,
-    >,
-{
     if member_id <= 0 {
         return Err(UpstreamError::InvalidArgument);
     }
 
-    let result = grpc::call_admin(
-        timeout,
-        members::GetMemberRequest {
-            identifier: Some(members::get_member_request::Identifier::MemberId(member_id)),
-        },
-        rpc,
-    )
-    .await?;
-    let value = result.member.ok_or(UpstreamError::Failed)?;
-
-    Ok(DetailsResponse::Success(MemberDetails::from(value)))
+    let member = sensitive_member(client, timeout, member_id).await?;
+    Ok(DetailsResponse::Success(MemberDetails::from(member)))
 }
 
 impl From<SensitiveMember> for MemberDetails {
@@ -533,33 +537,22 @@ impl IntoResponse for CreateResponse {
 }
 
 #[utoipa::path(post, path = "/api/members", request_body = NewMember, responses(CreateResponse, UpstreamError))]
-pub async fn create(
-    State(state): State<AppState>,
+pub async fn create<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
+    State(MembersApi {
+        members_admin_grpc_client: mut client,
+        timeout,
+        ..
+    }): State<MembersApi<MGC, MAGC>>,
     body: Result<Json<NewMember>, JsonRejection>,
 ) -> Result<CreateResponse, UpstreamError> {
-    let mut client = state.client.clone();
-
-    create_with(
-        body,
-        state.config.members_admin_service_grpc_timeout,
-        |request| async move { client.create_member(request).await },
-    )
-    .await
-}
-
-async fn create_with<F, Fut>(
-    body: Result<Json<NewMember>, JsonRejection>,
-    timeout: Duration,
-    rpc: F,
-) -> Result<CreateResponse, UpstreamError>
-where
-    F: FnOnce(tonic::Request<CreateMemberRequest>) -> Fut,
-    Fut: Future<Output = Result<tonic::Response<CreateMemberResponse>, tonic::Status>>,
-{
     let Json(body) = body.map_err(|_| UpstreamError::InvalidArgument)?;
 
-    let response = grpc::call_admin(timeout, body.try_into()?, rpc).await?;
-    let member = response.member.ok_or(UpstreamError::Failed)?;
+    let member = grpc::call_admin(timeout, body.try_into()?, |request| async move {
+        client.create_member(request).await
+    })
+    .await?
+    .member
+    .ok_or(UpstreamError::Failed)?;
 
     Ok(CreateResponse::Created(member.into()))
 }
@@ -582,8 +575,12 @@ pub struct BulkResults {
 }
 
 #[utoipa::path(post, path = "/api/members/bulk", request_body = BulkMembers, responses((status = 200, body = BulkResults), UpstreamError))]
-pub async fn bulk_create(
-    State(state): State<AppState>,
+pub async fn bulk_create<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
+    State(MembersApi {
+        members_admin_grpc_client: mut client,
+        timeout,
+        ..
+    }): State<MembersApi<MGC, MAGC>>,
     body: Result<Json<BulkMembers>, JsonRejection>,
 ) -> Result<Json<BulkResults>, UpstreamError> {
     use members::admin::{
@@ -617,9 +614,8 @@ pub async fn bulk_create(
     }
 
     if !operations.is_empty() {
-        let mut client = state.client.clone();
         let response = grpc::call_admin(
-            state.config.members_admin_service_grpc_timeout,
+            timeout,
             BulkMemberOperationsRequest { operations },
             |request| async move { client.bulk_member_operations(request).await },
         )
@@ -671,107 +667,50 @@ impl IntoResponse for ListResponse {
 }
 
 #[utoipa::path(get, path = "/api/members", responses(ListResponse, UpstreamError))]
-pub async fn list(State(state): State<AppState>) -> Result<ListResponse, UpstreamError> {
-    let timeout = state.config.members_admin_service_grpc_timeout;
-
-    collect_members(timeout, |message| {
-        let mut client = state.members_client.clone();
-        async move { grpc::call(timeout, message, |request| client.list_members(request)).await }
-    })
-    .await
-    .map(ListResponse::Success)
-}
-
-async fn collect_members<F, Fut>(
-    timeout: Duration,
-    mut fetch_page: F,
-) -> Result<MemberList, UpstreamError>
-where
-    F: FnMut(members::ListMembersRequest) -> Fut,
-    Fut: Future<Output = Result<members::ListMembersResponse, UpstreamError>>,
-{
-    tokio::time::timeout(timeout, async {
-        let mut members = BTreeMap::new();
-        let mut page_token = String::new();
-        let mut seen = HashSet::new();
-
-        loop {
-            let response = fetch_page(members::ListMembersRequest {
-                include_archived: false,
-                page_size: 100,
-                page_token,
-            })
-            .await?;
-
-            for member in response.members {
-                members.insert(member.member_id, Member::from(member));
-            }
-
-            page_token = response.next_page_token;
-            if page_token.is_empty() {
-                break;
-            }
-
-            if !seen.insert(page_token.clone()) {
-                return Err(UpstreamError::Failed);
-            }
-        }
-
-        let members: Vec<_> = members.into_values().collect();
-        Ok(MemberList {
-            total: members.len(),
-            members,
-        })
-    })
-    .await
-    .map_err(|_| UpstreamError::Timeout)?
+pub async fn list<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
+    State(MembersApi {
+        members_grpc_client: client,
+        timeout,
+        ..
+    }): State<MembersApi<MGC, MAGC>>,
+) -> Result<ListResponse, UpstreamError> {
+    collect_members(client, timeout)
+        .await
+        .map(ListResponse::Success)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{future::Future, time::Duration};
+    use std::time::Duration;
 
     use axum::{
         Json,
         body::Body,
-        extract::{FromRequest, rejection::JsonRejection},
+        extract::{FromRequest, Path, State, rejection::JsonRejection},
         http::{Request, StatusCode},
         response::{IntoResponse, Response},
     };
     use http_body_util::BodyExt;
     use members_grpc_service::members::{
         self,
-        admin::{CreateMemberResponse, SensitiveMember},
+        admin::{
+            ArchiveMemberResponse, BulkMemberOperationsResponse, CreateMemberResponse,
+            GetSensitiveMemberResponse, SensitiveMember, UpdateMemberResponse,
+        },
     };
-    use tonic::{Code, Response as GrpcResponse, Status};
+    use tonic::Code;
 
-    use super::{
-        CreateMemberRequest, ListResponse, Member, MemberUpdate, NewMember, UpdateResponse,
-        UpstreamError, collect_members, create_with, send_update,
-    };
-    use crate::http::state::test_state;
+    use super::{CreateMemberRequest, Member, MemberUpdate, MembersApi, NewMember, UpstreamError};
+    use crate::grpc::fake::{FakeAdmin, FakeMembers, Outcome, sent};
 
-    async fn update_with<F, Fut>(
-        member_id: i32,
-        body: Result<Json<MemberUpdate>, JsonRejection>,
-        timeout: Duration,
-        rpc: F,
-    ) -> Result<UpdateResponse, UpstreamError>
-    where
-        F: FnOnce(tonic::Request<members::admin::UpdateMemberRequest>) -> Fut,
-        Fut: Future<
-            Output = Result<tonic::Response<members::admin::UpdateMemberResponse>, tonic::Status>,
-        >,
-    {
-        let Json(body) = body.map_err(|_| UpstreamError::InvalidArgument)?;
-        send_update(body.into_request(member_id)?, timeout, rpc).await
+    type Api = State<MembersApi<FakeMembers, FakeAdmin>>;
+
+    fn api_with_timeout(members: FakeMembers, admin: FakeAdmin, timeout: Duration) -> Api {
+        State(MembersApi::new(members, admin, timeout))
     }
 
-    #[derive(Clone, Copy)]
-    enum Reply {
-        Success,
-        MissingMember,
-        Error(Code),
+    fn api(admin: FakeAdmin) -> Api {
+        api_with_timeout(FakeMembers::default(), admin, Duration::from_secs(1))
     }
 
     fn sensitive_member() -> SensitiveMember {
@@ -788,49 +727,95 @@ mod tests {
         }
     }
 
-    async fn create_reply(body: Result<Json<NewMember>, JsonRejection>, reply: Reply) -> Response {
-        create_with(body, Duration::from_secs(1), |request| async move {
-            assert_eq!(request.metadata().get("profile").unwrap(), "core_admin");
-            assert!(request.metadata().contains_key("grpc-timeout"));
+    fn found(member: Option<SensitiveMember>) -> Outcome<GetSensitiveMemberResponse> {
+        Outcome::Reply(GetSensitiveMemberResponse { member })
+    }
 
-            let input = request.into_inner();
-            assert_eq!(input.email, "person@example.com");
-            assert_eq!(input.first_name, "First");
-            assert_eq!(input.last_name, "Last");
+    fn current(updated_at: &str) -> Outcome<GetSensitiveMemberResponse> {
+        found(Some(SensitiveMember {
+            updated_at: Some(updated_at.parse().unwrap()),
+            ..sensitive_member()
+        }))
+    }
 
-            let member = match reply {
-                Reply::Success => Some(sensitive_member()),
-                Reply::MissingMember => None,
-                Reply::Error(code) => return Err(Status::new(code, "private upstream details")),
-            };
-
-            Ok(GrpcResponse::new(CreateMemberResponse { member }))
+    fn created() -> Outcome<CreateMemberResponse> {
+        Outcome::Reply(CreateMemberResponse {
+            member: Some(sensitive_member()),
         })
+    }
+
+    fn updated() -> Outcome<UpdateMemberResponse> {
+        Outcome::Reply(UpdateMemberResponse {
+            member: Some(sensitive_member()),
+        })
+    }
+
+    fn page(ids: &[i32], next_page_token: &str) -> Outcome<members::ListMembersResponse> {
+        Outcome::Reply(members::ListMembersResponse {
+            members: ids
+                .iter()
+                .map(|&member_id| members::Member {
+                    member_id,
+                    joined_at: sensitive_member().joined_at,
+                    ..Default::default()
+                })
+                .collect(),
+            next_page_token: next_page_token.into(),
+        })
+    }
+
+    async fn create_reply(
+        body: Result<Json<NewMember>, JsonRejection>,
+        create_response: Outcome<CreateMemberResponse>,
+    ) -> (Response, FakeAdmin) {
+        let admin = FakeAdmin {
+            create_response,
+            ..Default::default()
+        };
+        let response = super::create(api(admin.clone()), body)
+            .await
+            .into_response();
+        (response, admin)
+    }
+
+    async fn list_reply(page: Outcome<members::ListMembersResponse>) -> Response {
+        super::list(api_with_timeout(
+            FakeMembers::pages([page]),
+            FakeAdmin::default(),
+            Duration::from_secs(1),
+        ))
         .await
         .into_response()
     }
 
-    async fn list_reply(reply: Reply) -> Response {
-        collect_members(Duration::from_secs(1), |request| async move {
-            assert_eq!(request.page_size, 100);
-            assert!(!request.include_archived);
+    async fn details_reply(admin: FakeAdmin, member_id: i32) -> Response {
+        super::details(api(admin), Path(member_id))
+            .await
+            .into_response()
+    }
 
-            if let Reply::Error(code) = reply {
-                return Err(Status::new(code, "private upstream details").into());
-            }
+    async fn update_reply(
+        admin: FakeAdmin,
+        body: Result<Json<MemberUpdate>, JsonRejection>,
+    ) -> Response {
+        super::update(api(admin), Path(42), body)
+            .await
+            .into_response()
+    }
 
-            Ok(members::ListMembersResponse {
-                members: vec![members::Member {
-                    member_id: 42,
-                    joined_at: sensitive_member().joined_at,
-                    ..Default::default()
-                }],
-                next_page_token: String::new(),
-            })
-        })
-        .await
-        .map(ListResponse::Success)
-        .into_response()
+    async fn archive_reply(admin: FakeAdmin, member_id: i32) -> Response {
+        super::archive(api(admin), Path(member_id))
+            .await
+            .into_response()
+    }
+
+    async fn update_body(input: serde_json::Value) -> Result<Json<MemberUpdate>, JsonRejection> {
+        let request = Request::builder()
+            .header("content-type", "application/json")
+            .body(Body::from(input.to_string()))
+            .unwrap();
+
+        Json::from_request(request, &()).await
     }
 
     async fn request_body(body: &str) -> Result<Json<NewMember>, JsonRejection> {
@@ -851,7 +836,13 @@ mod tests {
 
     #[tokio::test]
     async fn create_sends_normalized_fields_and_admin_metadata_and_returns_created_member() {
-        let response = create_reply(request_body(VALID_MEMBER).await, Reply::Success).await;
+        let (response, admin) = create_reply(request_body(VALID_MEMBER).await, created()).await;
+
+        let sent = sent(&admin.create_requests);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].email, "person@example.com");
+        assert_eq!(sent[0].first_name, "First");
+        assert_eq!(sent[0].last_name, "Last");
 
         assert_eq!(response.status(), StatusCode::CREATED);
         assert_eq!(response.headers()["content-type"], "application/json");
@@ -875,25 +866,18 @@ mod tests {
         )
         .await;
 
-        let response = create_with(body, Duration::from_secs(1), |request| async move {
-            assert_eq!(request.metadata().get("profile").unwrap(), "core_admin");
+        let (response, admin) = create_reply(body, created()).await;
 
-            let input = request.into_inner();
-            assert_eq!(input.linkedin_username.as_deref(), Some("person-linkedin"));
-            assert_eq!(
-                input.instagram_username.as_deref(),
-                Some("person.instagram")
-            );
-            assert_eq!(input.career.as_deref(), Some("Engineer"));
-            assert_eq!(input.industry.as_deref(), Some("Technology"));
-            assert_eq!(input.profile.as_deref(), Some("Private notes"));
-
-            Ok(GrpcResponse::new(CreateMemberResponse {
-                member: Some(sensitive_member()),
-            }))
-        })
-        .await
-        .into_response();
+        let sent = sent(&admin.create_requests);
+        let input = &sent[0];
+        assert_eq!(input.linkedin_username.as_deref(), Some("person-linkedin"));
+        assert_eq!(
+            input.instagram_username.as_deref(),
+            Some("person.instagram")
+        );
+        assert_eq!(input.career.as_deref(), Some("Engineer"));
+        assert_eq!(input.industry.as_deref(), Some("Technology"));
+        assert_eq!(input.profile.as_deref(), Some("Private notes"));
 
         assert_eq!(response.status(), StatusCode::CREATED);
         assert!(json_body(response).await.get("profile").is_none());
@@ -906,13 +890,7 @@ mod tests {
             "{}",
             r#"{"email":" ","first_name":"First","last_name":"Last"}"#,
         ] {
-            let response = create_with(
-                request_body(body).await,
-                Duration::from_secs(1),
-                |_| async { panic!("invalid input must not reach gRPC") },
-            )
-            .await
-            .into_response();
+            let (response, _) = create_reply(request_body(body).await, Outcome::Unexpected).await;
 
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
             assert_eq!(
@@ -924,7 +902,11 @@ mod tests {
 
     #[tokio::test]
     async fn create_rejects_a_successful_rpc_without_a_member() {
-        let response = create_reply(request_body(VALID_MEMBER).await, Reply::MissingMember).await;
+        let (response, _) = create_reply(
+            request_body(VALID_MEMBER).await,
+            Outcome::Reply(CreateMemberResponse { member: None }),
+        )
+        .await;
 
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
         assert_eq!(
@@ -954,8 +936,10 @@ mod tests {
             ),
         ] {
             let responses = [
-                create_reply(request_body(VALID_MEMBER).await, Reply::Error(code)).await,
-                list_reply(Reply::Error(code)).await,
+                create_reply(request_body(VALID_MEMBER).await, Outcome::Fail(code))
+                    .await
+                    .0,
+                list_reply(Outcome::Fail(code)).await,
             ];
 
             for response in responses {
@@ -970,7 +954,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_returns_members_and_total_as_json() {
-        let response = list_reply(Reply::Success).await;
+        let response = list_reply(page(&[42], "")).await;
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = json_body(response).await;
@@ -999,31 +983,24 @@ mod tests {
 
     #[tokio::test]
     async fn details_returns_full_record_with_admin_metadata() {
-        let response = super::details_with(42, Duration::from_secs(1), |request| async move {
-            assert_eq!(request.metadata().get("profile").unwrap(), "core_admin");
-            assert!(request.metadata().contains_key("grpc-timeout"));
+        let mut member = sensitive_member();
+        member.linkedin_username = Some("person-linkedin".into());
+        member.instagram_username = Some("person.photo".into());
+        member.updated_at = Some("2020-01-01T00:00:00Z".parse().unwrap());
+        member.career = Some("Engineer".into());
+        member.industry = Some("Technology".into());
+        member.role = Some(members::MemberRole::Mentor as i32);
 
-            assert!(matches!(
-                request.into_inner().identifier,
-                Some(members::get_member_request::Identifier::MemberId(42))
-            ));
+        let admin = FakeAdmin {
+            get_response: found(Some(member)),
+            ..Default::default()
+        };
+        let response = details_reply(admin.clone(), 42).await;
 
-            let mut member = sensitive_member();
-            member.linkedin_username = Some("person-linkedin".into());
-            member.instagram_username = Some("person.photo".into());
-            member.updated_at = Some("2020-01-01T00:00:00Z".parse().unwrap());
-            member.career = Some("Engineer".into());
-            member.industry = Some("Technology".into());
-            member.role = Some(members::MemberRole::Mentor as i32);
-
-            Ok(GrpcResponse::new(
-                members::admin::GetSensitiveMemberResponse {
-                    member: Some(member),
-                },
-            ))
-        })
-        .await
-        .into_response();
+        assert!(matches!(
+            sent(&admin.get_requests)[0].identifier,
+            Some(members::get_member_request::Identifier::MemberId(42))
+        ));
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = json_body(response).await;
@@ -1041,21 +1018,18 @@ mod tests {
     #[tokio::test]
     async fn details_handles_invalid_ids_missing_records_and_upstream_errors() {
         for id in [0, -1] {
-            let response = super::details_with(id, Duration::from_secs(1), |_| async {
-                panic!("invalid id must not reach gRPC")
-            })
-            .await
-            .into_response();
+            let response = details_reply(FakeAdmin::default(), id).await;
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         }
 
-        let response = super::details_with(42, Duration::from_secs(1), |_| async {
-            Ok(GrpcResponse::new(
-                members::admin::GetSensitiveMemberResponse { member: None },
-            ))
-        })
-        .await
-        .into_response();
+        let response = details_reply(
+            FakeAdmin {
+                get_response: found(None),
+                ..Default::default()
+            },
+            42,
+        )
+        .await;
 
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
 
@@ -1064,11 +1038,14 @@ mod tests {
             (Code::PermissionDenied, StatusCode::FORBIDDEN),
             (Code::Unavailable, StatusCode::SERVICE_UNAVAILABLE),
         ] {
-            let response = super::details_with(42, Duration::from_secs(1), |_| async move {
-                Err(Status::new(code, "private upstream detail"))
-            })
-            .await
-            .into_response();
+            let response = details_reply(
+                FakeAdmin {
+                    get_response: Outcome::Fail(code),
+                    ..Default::default()
+                },
+                42,
+            )
+            .await;
 
             assert_eq!(response.status(), expected);
             assert!(
@@ -1079,10 +1056,19 @@ mod tests {
             );
         }
 
-        let response =
-            super::details_with(42, Duration::from_millis(1), |_| std::future::pending())
-                .await
-                .into_response();
+        let response = super::details(
+            api_with_timeout(
+                FakeMembers::default(),
+                FakeAdmin {
+                    get_response: Outcome::Hang,
+                    ..Default::default()
+                },
+                Duration::from_millis(1),
+            ),
+            Path(42),
+        )
+        .await
+        .into_response();
 
         assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
     }
@@ -1104,19 +1090,7 @@ mod tests {
             let mut input = serde_json::json!({ "expected_updated_at": "2020-01-01T00:00:00Z", "email": "person@example.com", "first_name": "First", "last_name": "Last" });
             input[field] = value.into();
 
-            let request = Request::builder()
-                .header("content-type", "application/json")
-                .body(Body::from(input.to_string()))
-                .unwrap();
-
-            let response = update_with(
-                42,
-                Json::from_request(request, &()).await,
-                Duration::from_secs(1),
-                |_| async { panic!("invalid input must not reach gRPC") },
-            )
-            .await
-            .into_response();
+            let response = update_reply(FakeAdmin::default(), update_body(input).await).await;
 
             assert_eq!(
                 response.status(),
@@ -1146,75 +1120,52 @@ mod tests {
                 }
             }
 
-            let body = serde_json::from_value(input).unwrap();
-            let response = update_with(
-                42,
-                Ok(Json(body)),
-                Duration::from_secs(1),
-                |request| async move {
-                    assert_eq!(request.metadata().get("profile").unwrap(), "core_admin");
-
-                    let input = request.into_inner();
-                    let expected = clear.then_some("");
-
-                    for field in [
-                        input.discord_id,
-                        input.discord_username,
-                        input.linkedin_username,
-                        input.instagram_username,
-                        input.career,
-                        input.industry,
-                        input.profile,
-                    ] {
-                        assert_eq!(field.as_deref(), expected);
-                    }
-
-                    assert_eq!(
-                        input.role,
-                        clear.then_some(members::MemberRole::Unspecified as i32)
-                    );
-                    assert!(input.joined_at.is_none());
-
-                    Ok(GrpcResponse::new(members::admin::UpdateMemberResponse {
-                        member: Some(sensitive_member()),
-                    }))
-                },
-            )
-            .await
-            .into_response();
+            let admin = FakeAdmin {
+                get_response: current("2020-01-01T00:00:00Z"),
+                update_response: updated(),
+                ..Default::default()
+            };
+            let response = update_reply(admin.clone(), update_body(input).await).await;
 
             assert_eq!(response.status(), StatusCode::OK);
+
+            let input = sent(&admin.update_requests).remove(0);
+            let expected = clear.then_some("");
+
+            for field in [
+                input.discord_id,
+                input.discord_username,
+                input.linkedin_username,
+                input.instagram_username,
+                input.career,
+                input.industry,
+                input.profile,
+            ] {
+                assert_eq!(field.as_deref(), expected);
+            }
+
+            assert_eq!(
+                input.role,
+                clear.then_some(members::MemberRole::Unspecified as i32)
+            );
+            assert!(input.joined_at.is_none());
         }
     }
 
     #[tokio::test]
     async fn checked_update_rejects_stale_versions_without_writing() {
-        let body = serde_json::from_value(serde_json::json!({
-            "expected_updated_at": "2020-01-01T00:00:00Z", "first_name": "Changed"
-        }))
-        .unwrap();
-
-        let response = super::checked_update_with(
-            42,
-            Ok(Json(body)),
-            Duration::from_secs(1),
-            |request| async move {
-                assert_eq!(request.metadata().get("profile").unwrap(), "core_admin");
-
-                let mut member = sensitive_member();
-                member.updated_at = Some("2020-01-02T00:00:00Z".parse().unwrap());
-                member.role = Some(members::MemberRole::Board as i32);
-
-                Ok(GrpcResponse::new(
-                    members::admin::GetSensitiveMemberResponse {
-                        member: Some(member),
-                    },
-                ))
-            },
-            |_| async { panic!("stale forms must not write") },
+        let admin = FakeAdmin {
+            get_response: current("2020-01-02T00:00:00Z"),
+            ..Default::default()
+        };
+        let response = update_reply(
+            admin,
+            update_body(serde_json::json!({
+                "expected_updated_at": "2020-01-01T00:00:00Z", "first_name": "Changed"
+            }))
+            .await,
         )
-        .await
-        .into_response();
+        .await;
 
         assert_eq!(response.status(), StatusCode::CONFLICT);
         assert!(
@@ -1227,46 +1178,34 @@ mod tests {
 
     #[tokio::test]
     async fn checked_update_allows_unrelated_edits_to_incomplete_discord_records() {
-        let body = serde_json::from_value(serde_json::json!({
-            "expected_updated_at": "2020-01-01T00:00:00Z", "first_name": "Changed"
-        }))
-        .unwrap();
-
-        let response = super::checked_update_with(
-            42,
-            Ok(Json(body)),
-            Duration::from_secs(1),
-            |_| async {
-                let mut member = sensitive_member();
-                member.updated_at = Some("2020-01-01T00:00:00Z".parse().unwrap());
-                member.discord_username = None;
-
-                Ok(GrpcResponse::new(
-                    members::admin::GetSensitiveMemberResponse {
-                        member: Some(member),
-                    },
-                ))
-            },
-            |request| async move {
-                let input = request.into_inner();
-
-                assert_eq!(input.first_name.as_deref(), Some("Changed"));
-                assert!(input.email.is_none());
-                assert!(input.last_name.is_none());
-                assert!(input.discord_id.is_none());
-                assert!(input.discord_username.is_none());
-                assert!(input.role.is_none());
-                assert!(input.joined_at.is_none());
-
-                Ok(GrpcResponse::new(members::admin::UpdateMemberResponse {
-                    member: Some(sensitive_member()),
-                }))
-            },
+        let admin = FakeAdmin {
+            get_response: found(Some(SensitiveMember {
+                updated_at: Some("2020-01-01T00:00:00Z".parse().unwrap()),
+                discord_username: None,
+                ..sensitive_member()
+            })),
+            update_response: updated(),
+            ..Default::default()
+        };
+        let response = update_reply(
+            admin.clone(),
+            update_body(serde_json::json!({
+                "expected_updated_at": "2020-01-01T00:00:00Z", "first_name": "Changed"
+            }))
+            .await,
         )
-        .await
-        .into_response();
+        .await;
 
         assert_eq!(response.status(), StatusCode::OK);
+
+        let input = sent(&admin.update_requests).remove(0);
+        assert_eq!(input.first_name.as_deref(), Some("Changed"));
+        assert!(input.email.is_none());
+        assert!(input.last_name.is_none());
+        assert!(input.discord_id.is_none());
+        assert!(input.discord_username.is_none());
+        assert!(input.role.is_none());
+        assert!(input.joined_at.is_none());
     }
 
     #[tokio::test]
@@ -1275,35 +1214,19 @@ mod tests {
             serde_json::json!({ "first_name": "Changed" }),
             serde_json::json!({ "expected_updated_at": "", "first_name": "Changed" }),
         ] {
-            let request = Request::builder()
-                .header("content-type", "application/json")
-                .body(Body::from(input.to_string()))
-                .unwrap();
-
-            let response = super::checked_update_with(
-                42,
-                Json::from_request(request, &()).await,
-                Duration::from_secs(1),
-                |_| async { panic!("missing version must not read") },
-                |_| async { panic!("missing version must not write") },
-            )
-            .await
-            .into_response();
+            let response = update_reply(FakeAdmin::default(), update_body(input).await).await;
 
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         }
 
-        let body = serde_json::from_value(serde_json::json!({ "expected_updated_at": "2020-01-01T00:00:00Z", "first_name": "Changed" })).unwrap();
-
-        let response = super::checked_update_with(
-            42,
-            Ok(Json(body)),
-            Duration::from_secs(1),
-            |_| async { Err(Status::unavailable("private details")) },
-            |_| async { panic!("failed reads must not write") },
+        let response = update_reply(
+            FakeAdmin {
+                get_response: Outcome::Fail(Code::Unavailable),
+                ..Default::default()
+            },
+            update_body(serde_json::json!({ "expected_updated_at": "2020-01-01T00:00:00Z", "first_name": "Changed" })).await,
         )
-        .await
-        .into_response();
+        .await;
 
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
@@ -1402,18 +1325,14 @@ mod tests {
             (Some(i32::MAX), serde_json::Value::Null),
             (None, serde_json::Value::Null),
         ] {
-            let response = super::details_with(42, Duration::from_secs(1), |_| async move {
-                Ok(GrpcResponse::new(
-                    members::admin::GetSensitiveMemberResponse {
-                        member: Some(SensitiveMember {
-                            role,
-                            ..sensitive_member()
-                        }),
-                    },
-                ))
-            })
-            .await
-            .into_response();
+            let admin = FakeAdmin {
+                get_response: found(Some(SensitiveMember {
+                    role,
+                    ..sensitive_member()
+                })),
+                ..Default::default()
+            };
+            let response = details_reply(admin, 42).await;
 
             assert_eq!(response.status(), StatusCode::OK);
             let body = json_body(response).await;
@@ -1425,32 +1344,23 @@ mod tests {
     #[tokio::test]
     async fn checked_update_stops_on_missing_member_or_version() {
         for missing_member in [true, false] {
-            let body = serde_json::from_value(serde_json::json!({
-                "expected_updated_at": "2020-01-01T00:00:00Z", "first_name": "Changed"
-            }))
-            .unwrap();
-
-            let response = super::checked_update_with(
-                42,
-                Ok(Json(body)),
-                Duration::from_secs(1),
-                |request| async move {
-                    assert!(matches!(
-                        request.into_inner().identifier,
-                        Some(members::get_member_request::Identifier::MemberId(42))
-                    ));
-
-                    Ok(GrpcResponse::new(
-                        members::admin::GetSensitiveMemberResponse {
-                            member: (!missing_member).then(sensitive_member),
-                        },
-                    ))
-                },
-                |_| async { panic!("missing member or version must not write") },
+            let admin = FakeAdmin {
+                get_response: found((!missing_member).then(sensitive_member)),
+                ..Default::default()
+            };
+            let response = update_reply(
+                admin.clone(),
+                update_body(serde_json::json!({
+                    "expected_updated_at": "2020-01-01T00:00:00Z", "first_name": "Changed"
+                }))
+                .await,
             )
-            .await
-            .into_response();
+            .await;
 
+            assert!(matches!(
+                sent(&admin.get_requests)[0].identifier,
+                Some(members::get_member_request::Identifier::MemberId(42))
+            ));
             assert_eq!(
                 response.status(),
                 if missing_member {
@@ -1464,20 +1374,14 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn checked_update_read_timeout_prevents_writes() {
-        let body = serde_json::from_value(serde_json::json!({
-            "expected_updated_at": "2020-01-01T00:00:00Z"
-        }))
-        .unwrap();
-
-        let response = super::checked_update_with(
-            42,
-            Ok(Json(body)),
-            Duration::from_secs(1),
-            |_| std::future::pending(),
-            |_| async { panic!("timed out reads must not write") },
+        let response = update_reply(
+            FakeAdmin {
+                get_response: Outcome::Hang,
+                ..Default::default()
+            },
+            update_body(serde_json::json!({ "expected_updated_at": "2020-01-01T00:00:00Z" })).await,
         )
-        .await
-        .into_response();
+        .await;
 
         assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
         assert_eq!(
@@ -1486,188 +1390,17 @@ mod tests {
         );
     }
 
-    struct MemberGrpc {
-        reply: Option<Reply>,
-    }
-
-    #[tonic::async_trait]
-    impl members::admin::members_admin_service_server::MembersAdminService for MemberGrpc {
-        async fn get_sensitive_member(
-            &self,
-            request: tonic::Request<members::GetMemberRequest>,
-        ) -> Result<GrpcResponse<members::admin::GetSensitiveMemberResponse>, Status> {
-            assert_eq!(request.metadata().get("profile").unwrap(), "core_admin");
-            assert!(matches!(
-                request.into_inner().identifier,
-                Some(members::get_member_request::Identifier::MemberId(42))
-            ));
-
-            let mut member = sensitive_member();
-            member.updated_at = Some("2020-01-01T00:00:00Z".parse().unwrap());
-
-            Ok(GrpcResponse::new(
-                members::admin::GetSensitiveMemberResponse {
-                    member: Some(member),
-                },
-            ))
-        }
-
-        async fn list_sensitive_members(
-            &self,
-            _: tonic::Request<members::ListMembersRequest>,
-        ) -> Result<GrpcResponse<members::admin::ListSensitiveMembersResponse>, Status> {
-            panic!("archive must not call list_sensitive_members")
-        }
-
-        async fn create_member(
-            &self,
-            request: tonic::Request<members::admin::CreateMemberRequest>,
-        ) -> Result<GrpcResponse<members::admin::CreateMemberResponse>, Status> {
-            assert_eq!(request.metadata().get("profile").unwrap(), "core_admin");
-            assert!(request.metadata().contains_key("grpc-timeout"));
-
-            let input = request.into_inner();
-            assert_eq!(input.email, "person@example.com");
-            assert_eq!(input.first_name, "First");
-            assert_eq!(input.last_name, "Last");
-
-            Ok(GrpcResponse::new(CreateMemberResponse {
-                member: Some(sensitive_member()),
-            }))
-        }
-
-        async fn update_member(
-            &self,
-            request: tonic::Request<members::admin::UpdateMemberRequest>,
-        ) -> Result<GrpcResponse<members::admin::UpdateMemberResponse>, Status> {
-            assert_eq!(request.metadata().get("profile").unwrap(), "core_admin");
-            assert!(request.metadata().contains_key("grpc-timeout"));
-
-            let input = request.into_inner();
-            assert_eq!(input.member_id, 42);
-            assert_eq!(input.first_name.as_deref(), Some("Changed"));
-            assert!(input.email.is_none());
-            assert!(input.joined_at.is_none());
-
-            Ok(GrpcResponse::new(members::admin::UpdateMemberResponse {
-                member: Some(SensitiveMember {
-                    first_name: "Changed".into(),
-                    ..sensitive_member()
-                }),
-            }))
-        }
-
-        async fn bulk_member_operations(
-            &self,
-            request: tonic::Request<members::admin::BulkMemberOperationsRequest>,
-        ) -> Result<GrpcResponse<members::admin::BulkMemberOperationsResponse>, Status> {
-            use members::admin::{
-                BulkMemberOperationsResponse, MemberCreated, MemberOperationFailed,
-                MemberOperationResult, member_operation, member_operation_result,
-            };
-
-            assert_eq!(request.metadata().get("profile").unwrap(), "core_admin");
-            assert!(request.metadata().contains_key("grpc-timeout"));
-
-            let operations = request.into_inner().operations;
-            assert_eq!(operations.len(), 2);
-
-            for operation in operations {
-                assert!(matches!(
-                    operation.operation,
-                    Some(member_operation::Operation::Create(_))
-                ));
-            }
-
-            Ok(GrpcResponse::new(BulkMemberOperationsResponse {
-                results: vec![
-                    MemberOperationResult {
-                        index: 1,
-                        outcome: Some(member_operation_result::Outcome::Failed(
-                            MemberOperationFailed {
-                                error: "Duplicate email".into(),
-                            },
-                        )),
-                    },
-                    MemberOperationResult {
-                        index: 0,
-                        outcome: Some(member_operation_result::Outcome::Created(MemberCreated {
-                            member: Some(sensitive_member()),
-                        })),
-                    },
-                ],
-            }))
-        }
-
-        async fn archive_member(
-            &self,
-            request: tonic::Request<members::admin::ArchiveMemberRequest>,
-        ) -> Result<GrpcResponse<members::admin::ArchiveMemberResponse>, Status> {
-            assert_eq!(request.metadata().get("profile").unwrap(), "core_admin");
-            assert!(request.metadata().contains_key("grpc-timeout"));
-            assert_eq!(request.into_inner().member_id, 42);
-
-            match self.reply {
-                Some(Reply::Success) => {
-                    Ok(GrpcResponse::new(members::admin::ArchiveMemberResponse {
-                        member: Some(sensitive_member()),
-                    }))
-                }
-                Some(Reply::MissingMember) => {
-                    Ok(GrpcResponse::new(members::admin::ArchiveMemberResponse {
-                        member: None,
-                    }))
-                }
-                Some(Reply::Error(code)) => Err(Status::new(code, "private upstream details")),
-                None => std::future::pending().await,
-            }
-        }
-    }
-
-    struct MemberServer(tokio::task::JoinHandle<()>);
-
-    impl Drop for MemberServer {
-        fn drop(&mut self) {
-            self.0.abort();
-        }
-    }
-
-    async fn member_server(reply: Option<Reply>) -> (crate::http::state::AppState, MemberServer) {
-        use members::admin::members_admin_service_server::MembersAdminServiceServer;
-        use tokio_stream::wrappers::TcpListenerStream;
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-
-        let server = MemberServer(tokio::spawn(async move {
-            tonic::transport::Server::builder()
-                .add_service(MembersAdminServiceServer::new(MemberGrpc { reply }))
-                .serve_with_incoming(TcpListenerStream::new(listener))
-                .await
-                .unwrap();
-        }));
-
-        let channel = tonic::transport::Endpoint::from_shared(format!("http://{address}"))
-            .unwrap()
-            .connect()
-            .await
-            .unwrap();
-
-        let mut state = test_state();
-        state.client =
-            members::admin::members_admin_service_client::MembersAdminServiceClient::new(channel);
-
-        (state, server)
-    }
-
     #[tokio::test]
-    async fn archive_handler_calls_generated_client_and_returns_empty_204() {
-        let (state, _server) = member_server(Some(Reply::Success)).await;
+    async fn archive_returns_empty_204_for_archived_member() {
+        let admin = FakeAdmin {
+            archive_response: Outcome::Reply(ArchiveMemberResponse {
+                member: Some(sensitive_member()),
+            }),
+            ..Default::default()
+        };
+        let response = archive_reply(admin.clone(), 42).await;
 
-        let response = super::archive(axum::extract::State(state), axum::extract::Path(42))
-            .await
-            .into_response();
-
+        assert_eq!(sent(&admin.archive_requests)[0].member_id, 42);
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         assert!(
             response
@@ -1681,38 +1414,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn archive_handler_maps_rpc_failures_without_leaking_details() {
-        for (reply, status, message) in [
+    async fn archive_maps_rpc_failures_without_leaking_details() {
+        for (archive, status, message) in [
             (
-                Reply::MissingMember,
+                Outcome::Reply(ArchiveMemberResponse { member: None }),
                 StatusCode::BAD_GATEWAY,
                 "upstream request failed",
             ),
             (
-                Reply::Error(Code::NotFound),
+                Outcome::Fail(Code::NotFound),
                 StatusCode::NOT_FOUND,
                 "not found",
             ),
             (
-                Reply::Error(Code::PermissionDenied),
+                Outcome::Fail(Code::PermissionDenied),
                 StatusCode::FORBIDDEN,
                 "permission denied",
             ),
             (
-                Reply::Error(Code::Unavailable),
+                Outcome::Fail(Code::Unavailable),
                 StatusCode::SERVICE_UNAVAILABLE,
                 "service unavailable",
             ),
             (
-                Reply::Error(Code::DeadlineExceeded),
+                Outcome::Fail(Code::DeadlineExceeded),
                 StatusCode::GATEWAY_TIMEOUT,
                 "upstream timeout",
             ),
         ] {
-            let (state, _server) = member_server(Some(reply)).await;
-            let response = super::archive(axum::extract::State(state), axum::extract::Path(42))
-                .await
-                .into_response();
+            let admin = FakeAdmin {
+                archive_response: archive,
+                ..Default::default()
+            };
+            let response = archive_reply(admin, 42).await;
 
             assert_eq!(response.status(), status);
             assert_eq!(
@@ -1723,13 +1457,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn archive_handler_rejects_invalid_ids_without_calling_rpc() {
+    async fn archive_rejects_invalid_ids_without_calling_rpc() {
         for member_id in [0, -1] {
-            let state = test_state();
-            let response =
-                super::archive(axum::extract::State(state), axum::extract::Path(member_id))
-                    .await
-                    .into_response();
+            let response = archive_reply(FakeAdmin::default(), member_id).await;
 
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
             assert_eq!(
@@ -1740,17 +1470,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn archive_handler_enforces_configured_timeout() {
-        let (mut state, _server) = member_server(None).await;
-        state.config.members_admin_service_grpc_timeout = Duration::from_millis(50);
+    async fn archive_enforces_configured_timeout() {
+        let api = api_with_timeout(
+            FakeMembers::default(),
+            FakeAdmin {
+                archive_response: Outcome::Hang,
+                ..Default::default()
+            },
+            Duration::from_millis(50),
+        );
 
-        let response = tokio::time::timeout(
-            Duration::from_secs(2),
-            super::archive(axum::extract::State(state), axum::extract::Path(42)),
-        )
-        .await
-        .expect("archive handler must enforce its timeout")
-        .into_response();
+        let response = tokio::time::timeout(Duration::from_secs(2), super::archive(api, Path(42)))
+            .await
+            .expect("archive handler must enforce its timeout")
+            .into_response();
 
         assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
         assert_eq!(
@@ -1782,147 +1515,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn public_handlers_report_transport_failures_without_leaking_details() {
-        use axum::extract::{Path, State};
-        use members_grpc_service::members::{
-            admin::members_admin_service_client::MembersAdminServiceClient,
-            members_service_client::MembersServiceClient,
+    async fn update_reads_current_version_then_writes_trimmed_changes() {
+        let admin = FakeAdmin {
+            get_response: current("2020-01-01T00:00:00Z"),
+            update_response: Outcome::Reply(UpdateMemberResponse {
+                member: Some(SensitiveMember {
+                    first_name: "Changed".into(),
+                    ..sensitive_member()
+                }),
+            }),
+            ..Default::default()
         };
-
-        let channel = tonic::transport::Endpoint::from_static("http://127.0.0.1:0").connect_lazy();
-        let mut state = test_state();
-        state.client = MembersAdminServiceClient::new(channel.clone());
-        state.members_client = MembersServiceClient::new(channel);
-        state.config.members_admin_service_grpc_timeout = Duration::from_secs(1);
-
-        let update = serde_json::from_value(serde_json::json!({
-            "expected_updated_at": "2020-01-01T00:00:00Z", "first_name": "Changed"
-        }))
-        .unwrap();
-
-        let responses = [
-            super::create(State(state.clone()), request_body(VALID_MEMBER).await)
-                .await
-                .into_response(),
-            super::update(State(state.clone()), Path(42), Ok(Json(update)))
-                .await
-                .into_response(),
-            super::archive(State(state.clone()), Path(42))
-                .await
-                .into_response(),
-            super::details(State(state.clone()), Path(42))
-                .await
-                .into_response(),
-            super::list(State(state)).await.into_response(),
-        ];
-
-        for response in responses {
-            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-            assert_eq!(
-                json_body(response).await,
-                serde_json::json!({"error": "service unavailable"})
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn create_handler_calls_generated_client_and_returns_created_member() {
-        let (state, _server) = member_server(Some(Reply::Success)).await;
-
-        let response = super::create(
-            axum::extract::State(state),
-            request_body(VALID_MEMBER).await,
+        let response = update_reply(
+            admin.clone(),
+            update_body(serde_json::json!({
+                "expected_updated_at": "2020-01-01T00:00:00Z", "first_name": " Changed "
+            }))
+            .await,
         )
-        .await
-        .into_response();
+        .await;
 
-        assert_eq!(response.status(), StatusCode::CREATED);
-        let body = json_body(response).await;
-        assert_eq!(body["member_id"], 42);
-        assert_eq!(body["email"], "person@example.com");
-        assert!(body.get("profile").is_none());
-    }
-
-    #[tokio::test]
-    async fn details_handler_calls_generated_client_and_returns_version() {
-        let (state, _server) = member_server(Some(Reply::Success)).await;
-
-        let response = super::details(axum::extract::State(state), axum::extract::Path(42))
-            .await
-            .into_response();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = json_body(response).await;
-        assert_eq!(body["member_id"], 42);
-        assert_eq!(body["updated_at"], "2020-01-01T00:00:00Z");
-        assert_eq!(body["profile"], "private notes");
-    }
-
-    #[tokio::test]
-    async fn update_handler_reads_current_version_then_calls_generated_write_client() {
-        let (state, _server) = member_server(Some(Reply::Success)).await;
-
-        let body = serde_json::from_value(serde_json::json!({
-            "expected_updated_at": "2020-01-01T00:00:00Z", "first_name": " Changed "
-        }))
-        .unwrap();
-
-        let response = super::update(
-            axum::extract::State(state),
-            axum::extract::Path(42),
-            Ok(Json(body)),
-        )
-        .await
-        .into_response();
+        assert_eq!(sent(&admin.get_requests).len(), 1);
+        let input = sent(&admin.update_requests).remove(0);
+        assert_eq!(input.member_id, 42);
+        assert_eq!(input.first_name.as_deref(), Some("Changed"));
+        assert!(input.email.is_none());
+        assert!(input.joined_at.is_none());
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = json_body(response).await;
         assert_eq!(body["member_id"], 42);
         assert_eq!(body["first_name"], "Changed");
         assert!(body.get("profile").is_none());
-    }
-
-    #[tokio::test]
-    async fn archive_validates_id_and_forwards_admin_metadata() {
-        for id in [0, -1] {
-            let result = super::archive_with(id, Duration::from_secs(1), |_| async {
-                panic!("invalid IDs must not reach gRPC")
-            })
-            .await;
-
-            assert!(matches!(result, Err(UpstreamError::InvalidArgument)));
-        }
-
-        for reply in [0, 1, 2] {
-            let result = super::archive_with(42, Duration::from_secs(1), |request| async move {
-                assert_eq!(request.metadata().get("profile").unwrap(), "core_admin");
-                assert!(request.metadata().contains_key("grpc-timeout"));
-                assert_eq!(request.into_inner().member_id, 42);
-
-                if reply == 2 {
-                    return Err(tonic::Status::not_found("private details"));
-                }
-
-                Ok(tonic::Response::new(
-                    members::admin::ArchiveMemberResponse {
-                        member: (reply == 0).then(|| SensitiveMember {
-                            member_id: 42,
-                            ..Default::default()
-                        }),
-                    },
-                ))
-            })
-            .await;
-
-            match reply {
-                0 => assert_eq!(
-                    axum::response::IntoResponse::into_response(result.unwrap()).status(),
-                    axum::http::StatusCode::NO_CONTENT
-                ),
-                1 => assert!(matches!(result, Err(UpstreamError::Failed))),
-                _ => assert!(result.is_err()),
-            }
-        }
     }
 
     fn new_member() -> NewMember {
@@ -1943,54 +1567,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_forwards_admin_metadata_and_propagates_errors() {
-        for reply in [0, 1, 2] {
-            let body = super::MemberUpdate {
-                expected_updated_at: "2020-01-01T00:00:00Z".into(),
-                email: Some("person@example.com".into()),
-                first_name: Some("First".into()),
-                last_name: Some("Last".into()),
-                discord_id: None,
-                discord_username: None,
-                linkedin_username: None,
-                instagram_username: None,
-                career: None,
-                industry: None,
-                profile: None,
-                role: None,
+    async fn update_maps_missing_member_and_write_errors() {
+        for (update, status) in [
+            (
+                Outcome::Reply(UpdateMemberResponse { member: None }),
+                StatusCode::BAD_GATEWAY,
+            ),
+            (Outcome::Fail(Code::AlreadyExists), StatusCode::CONFLICT),
+        ] {
+            let admin = FakeAdmin {
+                get_response: current("2020-01-01T00:00:00Z"),
+                update_response: update,
+                ..Default::default()
             };
-
-            let result = update_with(
-                42,
-                Ok(axum::Json(body)),
-                Duration::from_secs(1),
-                |request| async move {
-                    assert_eq!(request.metadata().get("profile").unwrap(), "core_admin");
-                    assert!(request.metadata().contains_key("grpc-timeout"));
-                    assert_eq!(request.into_inner().member_id, 42);
-
-                    if reply == 2 {
-                        return Err(tonic::Status::already_exists("private"));
-                    }
-
-                    Ok(tonic::Response::new(members::admin::UpdateMemberResponse {
-                        member: (reply == 0).then(|| SensitiveMember {
-                            member_id: 42,
-                            ..Default::default()
-                        }),
-                    }))
-                },
+            let response = update_reply(
+                admin,
+                update_body(serde_json::json!({
+                    "expected_updated_at": "2020-01-01T00:00:00Z", "first_name": "First"
+                }))
+                .await,
             )
             .await;
 
-            match reply {
-                0 => {
-                    let super::UpdateResponse::Success(member) = result.unwrap();
-                    assert_eq!(member.member_id, 42);
-                }
-                1 => assert!(matches!(result, Err(UpstreamError::Failed))),
-                _ => assert!(result.is_err()),
-            }
+            assert_eq!(response.status(), status);
         }
     }
 
@@ -2175,38 +1774,21 @@ mod tests {
 
     #[tokio::test]
     async fn pagination_keeps_unique_members_and_passes_tokens_unchanged() {
-        let mut page = 0;
+        let client = FakeMembers::pages([page(&[1, 2], "0:2"), page(&[2, 3], "")]);
 
-        let list = collect_members(Duration::from_secs(1), |request| {
+        let list = super::collect_members(client.clone(), Duration::from_secs(1))
+            .await
+            .unwrap();
+
+        let requests = sent(&client.list_requests);
+        assert_eq!(requests.len(), 2);
+        for request in &requests {
             assert!(!request.include_archived);
             assert_eq!(request.page_size, 100);
+        }
+        assert!(requests[0].page_token.is_empty());
+        assert_eq!(requests[1].page_token, "0:2");
 
-            page += 1;
-            let (ids, next_page_token) = if page == 1 {
-                assert!(request.page_token.is_empty());
-                (vec![1, 2], "0:2")
-            } else {
-                assert_eq!(request.page_token, "0:2");
-                (vec![2, 3], "")
-            };
-
-            async move {
-                Ok(members::ListMembersResponse {
-                    members: ids
-                        .into_iter()
-                        .map(|member_id| members::Member {
-                            member_id,
-                            ..Default::default()
-                        })
-                        .collect(),
-                    next_page_token: next_page_token.into(),
-                })
-            }
-        })
-        .await
-        .unwrap();
-
-        assert_eq!(page, 2);
         assert_eq!(list.total, 3);
         assert_eq!(
             list.members
@@ -2219,47 +1801,29 @@ mod tests {
 
     #[tokio::test]
     async fn pagination_rejects_repeated_tokens_and_discards_partial_results() {
-        let result = collect_members(Duration::from_secs(1), |_| async {
-            Ok(members::ListMembersResponse {
-                members: vec![],
-                next_page_token: "0:2".into(),
-            })
-        })
-        .await;
+        let client = FakeMembers::pages([page(&[1], "0:2"), page(&[2], "0:2")]);
+
+        let result = super::collect_members(client, Duration::from_secs(1)).await;
 
         assert!(matches!(result, Err(UpstreamError::Failed)));
     }
 
     #[tokio::test]
     async fn pagination_has_a_deadline_even_if_upstream_never_finishes() {
-        let result = collect_members(Duration::from_millis(1), |_| std::future::pending()).await;
+        let client = FakeMembers::pages([Outcome::Hang]);
+
+        let result = super::collect_members(client, Duration::from_millis(1)).await;
 
         assert!(matches!(result, Err(UpstreamError::Timeout)));
     }
 
     #[tokio::test]
     async fn pagination_propagates_upstream_failure_after_a_successful_page() {
-        let mut page = 0;
+        let client = FakeMembers::pages([page(&[1], "0:1"), Outcome::Fail(Code::Unavailable)]);
 
-        let result = collect_members(Duration::from_secs(1), |_| {
-            page += 1;
-            let response = if page == 1 {
-                Ok(members::ListMembersResponse {
-                    members: vec![members::Member {
-                        member_id: 1,
-                        ..Default::default()
-                    }],
-                    next_page_token: "0:1".into(),
-                })
-            } else {
-                Err(UpstreamError::Unavailable)
-            };
+        let result = super::collect_members(client.clone(), Duration::from_secs(1)).await;
 
-            async move { response }
-        })
-        .await;
-
-        assert_eq!(page, 2);
+        assert_eq!(sent(&client.list_requests).len(), 2);
         assert!(matches!(result, Err(UpstreamError::Unavailable)));
     }
 
@@ -2378,19 +1942,55 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn bulk_handler_uses_create_operations_and_maps_indexed_results() {
-        let (state, _server) = member_server(Some(Reply::Success)).await;
+    fn bulk_outcome() -> Outcome<BulkMemberOperationsResponse> {
+        use members::admin::{
+            MemberCreated, MemberOperationFailed, MemberOperationResult, member_operation_result,
+        };
 
+        Outcome::Reply(BulkMemberOperationsResponse {
+            results: vec![
+                MemberOperationResult {
+                    index: 1,
+                    outcome: Some(member_operation_result::Outcome::Failed(
+                        MemberOperationFailed {
+                            error: "Duplicate email".into(),
+                        },
+                    )),
+                },
+                MemberOperationResult {
+                    index: 0,
+                    outcome: Some(member_operation_result::Outcome::Created(MemberCreated {
+                        member: Some(sensitive_member()),
+                    })),
+                },
+            ],
+        })
+    }
+
+    #[tokio::test]
+    async fn bulk_create_sends_create_operations_and_maps_indexed_results() {
+        let admin = FakeAdmin {
+            bulk_response: bulk_outcome(),
+            ..Default::default()
+        };
         let body = serde_json::from_value(serde_json::json!({ "members": [
         { "email": "person@example.com", "first_name": "A", "last_name": "B" },
         { "email": "person@example.com", "first_name": "A", "last_name": "B" }
     ] }))
         .unwrap();
 
-        let response = super::bulk_create(axum::extract::State(state), Ok(Json(body)))
+        let response = super::bulk_create(api(admin.clone()), Ok(Json(body)))
             .await
             .into_response();
+
+        let operations = sent(&admin.bulk_requests).remove(0).operations;
+        assert_eq!(operations.len(), 2);
+        for operation in operations {
+            assert!(matches!(
+                operation.operation,
+                Some(members::admin::member_operation::Operation::Create(_))
+            ));
+        }
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = json_body(response).await;
@@ -2400,28 +2000,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bulk_http_route_enforces_the_encoded_request_limit() {
-        use crate::auth::session::{self, Principal};
-        use axum_extra::extract::CookieJar;
+    async fn bulk_route_enforces_the_encoded_request_limit() {
         use tower::ServiceExt;
 
-        let (state, _server) = member_server(Some(Reply::Success)).await;
-        let jar = session::establish(
-            CookieJar::new(),
-            &state.auth.config,
-            &Principal {
-                id: "test".into(),
-                name: "Admin".into(),
-                email: Some("admin@example.com".into()),
-                csrf_token: "csrf".into(),
-                expires_at: time::OffsetDateTime::now_utc().unix_timestamp() + 60,
+        let router = MembersApi::new(
+            FakeMembers::default(),
+            FakeAdmin {
+                bulk_response: bulk_outcome(),
+                ..Default::default()
             },
+            Duration::from_secs(1),
         )
-        .unwrap();
-        let session_cookie = jar.get("members_session").unwrap();
-        let cookie = format!("members_session={}", session_cookie.value());
-
-        let router = crate::http::app(state);
+        .router::<()>();
         let body = serde_json::json!({ "members": [
         { "email": "first@example.com", "first_name": "A", "last_name": "B", "profile": "x".repeat(1024 * 1024 - 200) },
         { "email": "second@example.com", "first_name": "C", "last_name": "D" },
@@ -2442,9 +2032,7 @@ mod tests {
                 .oneshot(
                     Request::builder()
                         .method("POST")
-                        .uri("/api/members/bulk")
-                        .header("cookie", &cookie)
-                        .header("x-csrf-token", "csrf")
+                        .uri("/members/bulk")
                         .header("content-type", "application/json")
                         .body(Body::from(padded_body))
                         .unwrap(),
