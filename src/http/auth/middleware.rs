@@ -2,15 +2,50 @@ use axum::{
     extract::{Request, State},
     http::{HeaderMap, HeaderValue, Method, header},
     middleware::Next,
-    response::{IntoResponse, Redirect, Response},
+    response::{IntoResponse, Response},
 };
 use axum_extra::extract::CookieJar;
 
-use super::{AuthApi, response::AuthError};
+use super::domain::AuthError;
 use crate::{
     auth::session::{self, Principal},
     config::AuthConfig,
 };
+
+pub async fn protect(
+    State(config): State<AuthConfig>,
+    jar: CookieJar,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let path = request.uri().path();
+    let api = path == "/api" || path.starts_with("/api/");
+    let callback = path == "/oauth2/callback";
+
+    let mut response = if api && !is_public_api(path) {
+        match authorize(&jar, request.method(), request.headers(), &config) {
+            Ok(principal) => {
+                request.extensions_mut().insert(principal);
+                next.run(request).await
+            }
+            Err(error) => error.into_response(),
+        }
+    } else {
+        next.run(request).await
+    };
+
+    if api || callback {
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        response.headers_mut().insert(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("no-referrer"),
+        );
+    }
+
+    response
+}
 
 pub fn check_csrf(
     principal: &Principal,
@@ -40,15 +75,10 @@ pub fn check_origin(headers: &HeaderMap, config: &AuthConfig) -> Result<(), Auth
     Ok(())
 }
 
-fn is_database(path: &str) -> bool {
-    path == "/database" || path.starts_with("/database/")
-}
-
 fn is_public_api(path: &str) -> bool {
     matches!(
         path,
         "/api/auth/login"
-            | "/api/auth/callback"
             | "/api/auth/session"
             | "/api/auth/logout"
             | "/api/openapi.json"
@@ -73,46 +103,6 @@ fn authorize(
     }
 
     Ok(principal)
-}
-
-pub async fn protect(
-    State(AuthApi { provider }): State<AuthApi>,
-    jar: CookieJar,
-    mut request: Request,
-    next: Next,
-) -> Response {
-    let path = request.uri().path();
-    let database = is_database(path);
-    let api = path == "/api" || path.starts_with("/api/");
-    let callback = path == "/oauth2/callback";
-
-    let mut response = if database || (api && !is_public_api(path)) {
-        match authorize(&jar, request.method(), request.headers(), &provider.config) {
-            Ok(principal) => {
-                request.extensions_mut().insert(principal);
-                next.run(request).await
-            }
-            Err(AuthError::Unauthorized(_)) if database => Redirect::to("/login").into_response(),
-            Err(AuthError::Forbidden(_)) if database => {
-                Redirect::to("/login?error=forbidden").into_response()
-            }
-            Err(error) => error.into_response(),
-        }
-    } else {
-        next.run(request).await
-    };
-
-    if api || database || callback {
-        response
-            .headers_mut()
-            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-        response.headers_mut().insert(
-            header::REFERRER_POLICY,
-            HeaderValue::from_static("no-referrer"),
-        );
-    }
-
-    response
 }
 
 #[cfg(test)]
@@ -192,9 +182,5 @@ mod tests {
         ] {
             assert!(!is_public_api(path));
         }
-
-        assert!(is_database("/database"));
-        assert!(is_database("/database/members"));
-        assert!(!is_database("/database-other"));
     }
 }

@@ -372,7 +372,7 @@ mod tests {
     async fn callback_routes_apply_auth_response_headers() {
         let router = test_app();
 
-        for path in ["/oauth2/callback", "/api/auth/callback"] {
+        for path in ["/oauth2/callback"] {
             let response = request(router.clone(), Method::GET, path, "", "").await;
 
             assert_eq!(response.status(), StatusCode::SEE_OTHER);
@@ -382,19 +382,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn http_routes_require_login_before_serving_database_or_member_api() {
+    async fn http_routes_serve_pages_but_require_login_for_member_api() {
         let router = test_app();
 
-        for path in ["/", "/login", "/api/auth/session", "/livez"] {
+        for path in ["/", "/login", "/database", "/api/auth/session", "/livez"] {
             let response = request(router.clone(), Method::GET, path, "", "").await;
             assert_eq!(response.status(), StatusCode::OK, "{path}");
-        }
-
-        for path in ["/database", "/database/members"] {
-            let response = request(router.clone(), Method::GET, path, "", "").await;
-            assert_eq!(response.status(), StatusCode::SEE_OTHER);
-            assert_eq!(response.headers()[header::LOCATION], "/login");
-            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
         }
 
         for method in [Method::GET, Method::POST, Method::PATCH, Method::DELETE] {
@@ -410,19 +403,10 @@ mod tests {
     async fn http_routes_enforce_admin_and_csrf_with_a_real_session_cookie() {
         let (router, cookie) = authenticated_app(false);
 
-        let response = request(router.clone(), Method::GET, "/database", &cookie, "").await;
-        assert_eq!(
-            response.headers()[header::LOCATION],
-            "/login?error=forbidden"
-        );
-
         let response = request(router, Method::GET, "/api/members", &cookie, "").await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
         let (router, cookie) = authenticated_app(true);
-
-        let response = request(router.clone(), Method::GET, "/database", &cookie, "").await;
-        assert_eq!(response.status(), StatusCode::OK);
 
         for method in [Method::POST, Method::PUT, Method::PATCH, Method::DELETE] {
             let response = request(
