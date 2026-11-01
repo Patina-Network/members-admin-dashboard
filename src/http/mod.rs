@@ -58,13 +58,13 @@ pub fn app<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
         .route("/readyz", get(health::ready))
         .route("/metrics", get(metrics::metrics))
         .route("/version", get(version::version))
-        .route(
-            "/oauth2/callback",
-            get(auth::callback).with_state(auth.clone()),
-        )
+        .merge(auth.oauth_callback_router())
         .nest("/api", api)
         .fallback(spa::spa)
-        .layer(middleware::from_fn_with_state(auth, auth::guard::protect))
+        .layer(middleware::from_fn_with_state(
+            state.config.auth.clone(),
+            auth::middleware::protect,
+        ))
         .layer(catch_panic::CatchPanicLayer::custom(panic_response))
         .with_state(state)
 }

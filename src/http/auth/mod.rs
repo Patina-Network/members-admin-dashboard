@@ -1,5 +1,5 @@
-pub mod guard;
-pub mod response;
+pub mod domain;
+pub mod middleware;
 
 use std::sync::Arc;
 
@@ -10,14 +10,16 @@ use axum::{
     routing::{get, post},
 };
 use axum_extra::extract::CookieJar;
-use serde::Deserialize;
 use time::OffsetDateTime;
 
 use crate::{
     auth::{provider::AzureProvider, session},
     config::AuthConfig,
 };
-use response::{AuthError, FlowResponse, LogoutBody, LogoutResponse, SessionBody, SessionResponse};
+use domain::{
+    AuthError, CallbackQuery, FlowResponse, LogoutBody, LogoutResponse, SessionBody,
+    SessionResponse,
+};
 
 #[derive(Clone)]
 pub struct AuthApi {
@@ -32,9 +34,14 @@ impl AuthApi {
     pub fn router<S: Clone + Send + Sync + 'static>(self) -> Router<S> {
         Router::new()
             .route("/auth/login", get(login))
-            .route("/auth/callback", get(callback))
             .route("/auth/session", get(current_session))
             .route("/auth/logout", post(logout))
+            .with_state(self)
+    }
+
+    pub fn oauth_callback_router<S: Clone + Send + Sync + 'static>(self) -> Router<S> {
+        Router::new()
+            .route("/oauth2/callback", get(callback))
             .with_state(self)
     }
 }
@@ -56,19 +63,6 @@ pub async fn login(
     Ok((jar, FlowResponse::redirect(url)))
 }
 
-#[derive(Deserialize, utoipa::IntoParams)]
-pub struct CallbackQuery {
-    code: Option<String>,
-    state: Option<String>,
-    error: Option<String>,
-}
-
-#[utoipa::path(
-    get,
-    path = "/api/auth/callback",
-    params(CallbackQuery),
-    responses(FlowResponse, AuthError)
-)]
 pub async fn callback(
     State(AuthApi { provider }): State<AuthApi>,
     jar: CookieJar,
@@ -107,6 +101,45 @@ pub async fn callback(
     complete_login(jar, config, principal)
 }
 
+#[utoipa::path(get, path = "/api/auth/session", responses(SessionResponse))]
+pub async fn current_session(
+    State(AuthApi { provider }): State<AuthApi>,
+    jar: CookieJar,
+) -> SessionResponse {
+    let config = &provider.config;
+    let principal = session::principal(&jar, config);
+    SessionResponse::Success(SessionBody {
+        user: principal.as_ref().map(|p| p.user(config)),
+        csrf_token: principal.map(|p| p.csrf_token),
+    })
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/auth/logout",
+    params(("X-CSRF-Token" = String, Header, description = "CSRF token from the current session")),
+    responses(LogoutResponse, AuthError),
+)]
+pub async fn logout(
+    State(AuthApi { provider }): State<AuthApi>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> Result<(CookieJar, LogoutResponse), AuthError> {
+    let config = &provider.config;
+    middleware::check_origin(&headers, config)?;
+
+    if let Some(principal) = session::principal(&jar, config) {
+        middleware::check_csrf(&principal, &headers, config)?;
+    }
+
+    Ok((
+        session::clear(jar, config),
+        LogoutResponse::Success(LogoutBody {
+            redirect_url: config.logout_url(),
+        }),
+    ))
+}
+
 fn complete_login(
     jar: CookieJar,
     config: &AuthConfig,
@@ -121,40 +154,6 @@ fn complete_login(
 
     let jar = session::establish(jar, config, &principal)?;
     Ok((jar, FlowResponse::redirect("/database")))
-}
-
-#[utoipa::path(get, path = "/api/auth/session", responses(SessionResponse))]
-pub async fn current_session(
-    State(AuthApi { provider }): State<AuthApi>,
-    jar: CookieJar,
-) -> SessionResponse {
-    let config = &provider.config;
-    let principal = session::principal(&jar, config);
-    SessionResponse::Success(SessionBody {
-        user: principal.as_ref().map(|p| p.user(config)),
-        csrf_token: principal.map(|p| p.csrf_token),
-    })
-}
-
-#[utoipa::path(post, path = "/api/auth/logout", params(("X-CSRF-Token" = String, Header, description = "CSRF token from the current session")), responses(LogoutResponse, AuthError))]
-pub async fn logout(
-    State(AuthApi { provider }): State<AuthApi>,
-    jar: CookieJar,
-    headers: HeaderMap,
-) -> Result<(CookieJar, LogoutResponse), AuthError> {
-    let config = &provider.config;
-    guard::check_origin(&headers, config)?;
-
-    if let Some(principal) = session::principal(&jar, config) {
-        guard::check_csrf(&principal, &headers, config)?;
-    }
-
-    Ok((
-        session::clear(jar, config),
-        LogoutResponse::Success(LogoutBody {
-            redirect_url: config.logout_url(),
-        }),
-    ))
 }
 
 #[cfg(test)]

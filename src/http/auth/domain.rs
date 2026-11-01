@@ -3,7 +3,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Redirect, Response},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use utoipa::{IntoResponses, ToResponse, ToSchema};
 
 use crate::{auth::session::User, http::ErrorBody};
@@ -150,6 +150,13 @@ impl IntoResponse for LogoutResponse {
             Self::Success(body) => Json(body).into_response(),
         }
     }
+}
+
+#[derive(Deserialize)]
+pub struct CallbackQuery {
+    pub code: Option<String>,
+    pub state: Option<String>,
+    pub error: Option<String>,
 }
 
 #[cfg(test)]
