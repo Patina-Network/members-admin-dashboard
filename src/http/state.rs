@@ -1,23 +1,13 @@
-use std::sync::Arc;
-
-use members_grpc_service::members::{
-    admin::members_admin_service_client::MembersAdminServiceClient,
-    members_service_client::MembersServiceClient,
-};
 use metrics_exporter_prometheus::PrometheusHandle;
 use metrics_process::Collector;
-use tonic::transport::Channel;
 
-use crate::{auth::provider::AzureProvider, config::Config};
+use crate::config::Config;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub members_client: MembersServiceClient<Channel>,
-    pub client: MembersAdminServiceClient<Channel>,
     pub prometheus_handle: PrometheusHandle,
     pub sys_collector: Collector,
     pub config: Config,
-    pub auth: Arc<AzureProvider>,
 }
 
 #[cfg(test)]
@@ -35,12 +25,6 @@ pub(crate) fn test_state() -> AppState {
     };
 
     AppState {
-        members_client: MembersServiceClient::new(
-            tonic::transport::Endpoint::from_static("http://localhost:50051").connect_lazy(),
-        ),
-        client: MembersAdminServiceClient::new(
-            tonic::transport::Endpoint::from_static("http://localhost:50051").connect_lazy(),
-        ),
         prometheus_handle: metrics_exporter_prometheus::PrometheusBuilder::new()
             .build_recorder()
             .handle(),
@@ -54,8 +38,7 @@ pub(crate) fn test_state() -> AppState {
             version: None,
             environment: None,
             log_filter: "info".into(),
-            auth: auth.clone(),
+            auth,
         },
-        auth: Arc::new(AzureProvider::new(auth).unwrap()),
     }
 }

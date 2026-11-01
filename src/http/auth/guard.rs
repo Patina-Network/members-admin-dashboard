@@ -6,11 +6,10 @@ use axum::{
 };
 use axum_extra::extract::CookieJar;
 
-use super::response::AuthError;
+use super::{AuthApi, response::AuthError};
 use crate::{
     auth::session::{self, Principal},
     config::AuthConfig,
-    http::state::AppState,
 };
 
 pub fn check_csrf(
@@ -77,7 +76,7 @@ fn authorize(
 }
 
 pub async fn protect(
-    State(state): State<AppState>,
+    State(AuthApi { provider }): State<AuthApi>,
     jar: CookieJar,
     mut request: Request,
     next: Next,
@@ -88,12 +87,7 @@ pub async fn protect(
     let callback = path == "/oauth2/callback";
 
     let mut response = if database || (api && !is_public_api(path)) {
-        match authorize(
-            &jar,
-            request.method(),
-            request.headers(),
-            &state.auth.config,
-        ) {
+        match authorize(&jar, request.method(), request.headers(), &provider.config) {
             Ok(principal) => {
                 request.extensions_mut().insert(principal);
                 next.run(request).await

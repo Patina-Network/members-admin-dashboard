@@ -1,23 +1,50 @@
 pub mod guard;
 pub mod response;
 
+use std::sync::Arc;
+
 use axum::{
+    Router,
     extract::{Query, State, rejection::QueryRejection},
     http::HeaderMap,
+    routing::{get, post},
 };
 use axum_extra::extract::CookieJar;
 use serde::Deserialize;
 use time::OffsetDateTime;
 
-use crate::{auth::session, config::AuthConfig, http::state::AppState};
+use crate::{
+    auth::{provider::AzureProvider, session},
+    config::AuthConfig,
+};
 use response::{AuthError, FlowResponse, LogoutBody, LogoutResponse, SessionBody, SessionResponse};
+
+#[derive(Clone)]
+pub struct AuthApi {
+    provider: Arc<AzureProvider>,
+}
+
+impl AuthApi {
+    pub fn new(provider: Arc<AzureProvider>) -> Self {
+        Self { provider }
+    }
+
+    pub fn router<S: Clone + Send + Sync + 'static>(self) -> Router<S> {
+        Router::new()
+            .route("/auth/login", get(login))
+            .route("/auth/callback", get(callback))
+            .route("/auth/session", get(current_session))
+            .route("/auth/logout", post(logout))
+            .with_state(self)
+    }
+}
 
 #[utoipa::path(get, path = "/api/auth/login", responses(FlowResponse, AuthError))]
 pub async fn login(
-    State(state): State<AppState>,
+    State(AuthApi { provider }): State<AuthApi>,
     jar: CookieJar,
 ) -> Result<(CookieJar, FlowResponse), AuthError> {
-    let (url, attempt) = match state.auth.begin().await {
+    let (url, attempt) = match provider.begin().await {
         Ok(attempt) => attempt,
         Err(_) => {
             tracing::warn!("Azure authorization discovery failed");
@@ -25,7 +52,7 @@ pub async fn login(
         }
     };
 
-    let jar = session::start_login(jar, &state.auth.config, &attempt)?;
+    let jar = session::start_login(jar, &provider.config, &attempt)?;
     Ok((jar, FlowResponse::redirect(url)))
 }
 
@@ -43,12 +70,12 @@ pub struct CallbackQuery {
     responses(FlowResponse, AuthError)
 )]
 pub async fn callback(
-    State(state): State<AppState>,
+    State(AuthApi { provider }): State<AuthApi>,
     jar: CookieJar,
     query: Result<Query<CallbackQuery>, QueryRejection>,
 ) -> Result<(CookieJar, FlowResponse), AuthError> {
     let Query(query) = query.map_err(|_| AuthError::invalid())?;
-    let config = &state.auth.config;
+    let config = &provider.config;
 
     let (jar, attempt) = session::take_login(jar, config);
 
@@ -69,7 +96,7 @@ pub async fn callback(
         return Ok((jar, FlowResponse::redirect("/login?error=invalid_callback")));
     };
 
-    let principal = match state.auth.finish(code, attempt).await {
+    let principal = match provider.finish(code, attempt).await {
         Ok(principal) => principal,
         Err(_) => {
             tracing::warn!("Azure token exchange or validation failed");
@@ -97,8 +124,11 @@ fn complete_login(
 }
 
 #[utoipa::path(get, path = "/api/auth/session", responses(SessionResponse))]
-pub async fn current_session(State(state): State<AppState>, jar: CookieJar) -> SessionResponse {
-    let config = &state.auth.config;
+pub async fn current_session(
+    State(AuthApi { provider }): State<AuthApi>,
+    jar: CookieJar,
+) -> SessionResponse {
+    let config = &provider.config;
     let principal = session::principal(&jar, config);
     SessionResponse::Success(SessionBody {
         user: principal.as_ref().map(|p| p.user(config)),
@@ -108,11 +138,11 @@ pub async fn current_session(State(state): State<AppState>, jar: CookieJar) -> S
 
 #[utoipa::path(post, path = "/api/auth/logout", params(("X-CSRF-Token" = String, Header, description = "CSRF token from the current session")), responses(LogoutResponse, AuthError))]
 pub async fn logout(
-    State(state): State<AppState>,
+    State(AuthApi { provider }): State<AuthApi>,
     jar: CookieJar,
     headers: HeaderMap,
 ) -> Result<(CookieJar, LogoutResponse), AuthError> {
-    let config = &state.auth.config;
+    let config = &provider.config;
     guard::check_origin(&headers, config)?;
 
     if let Some(principal) = session::principal(&jar, config) {

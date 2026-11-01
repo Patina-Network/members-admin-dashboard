@@ -4,7 +4,7 @@ use anyhow::Context;
 use members_admin_dashboard::{
     auth::provider::AzureProvider,
     config::Config,
-    http::{app, state::AppState},
+    http::{app, auth::AuthApi, members::MembersApi, state::AppState, suggestions::SuggestionsApi},
 };
 use members_grpc_service::members::{
     admin::members_admin_service_client::MembersAdminServiceClient,
@@ -43,23 +43,33 @@ async fn main() -> anyhow::Result<()> {
     let sys_collector = metrics_process::Collector::default();
     sys_collector.describe();
 
-    let auth = Arc::new(AzureProvider::new(config.auth.clone())?);
+    let auth = AuthApi::new(Arc::new(AzureProvider::new(config.auth.clone())?));
 
     let channel = config.grpc_endpoint()?.connect_lazy();
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", config.http_port)).await?;
 
+    let members_grpc_client = MembersServiceClient::new(channel.clone());
+    let members_admin_grpc_client = MembersAdminServiceClient::new(channel);
+    let timeout = config.members_admin_service_grpc_timeout;
+
     let state = AppState {
-        client: MembersAdminServiceClient::new(channel.clone()),
-        members_client: MembersServiceClient::new(channel),
         prometheus_handle,
         sys_collector,
         config: config.clone(),
-        auth,
     };
 
     tracing::info!(address=%listener.local_addr()?, "HTTP server started");
 
-    let router = app(state);
+    let router = app(
+        state,
+        auth,
+        MembersApi::new(
+            members_grpc_client.clone(),
+            members_admin_grpc_client,
+            timeout,
+        ),
+        SuggestionsApi::new(members_grpc_client, timeout),
+    );
 
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown())
