@@ -16,7 +16,10 @@ use members_grpc_service::members::{
 };
 
 use crate::grpc::{self, MembersAdminGrpcClient, MembersGrpcClient, error::UpstreamError};
-pub use domain::*;
+use domain::{
+    ArchiveResponse, BulkMembers, BulkResult, BulkResults, CreateResponse, DetailsResponse,
+    ListResponse, Member, MemberDetails, MemberList, MemberUpdate, NewMember, UpdateResponse,
+};
 
 #[derive(Clone)]
 pub struct MembersApi<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient> {
@@ -55,7 +58,13 @@ impl<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient> MembersApi<MGC, MAGC>
     }
 }
 
-#[utoipa::path(put, path = "/api/members/{member_id}", params(("member_id" = i32, Path)), request_body = MemberUpdate, responses(UpdateResponse, UpstreamError))]
+#[utoipa::path(
+    put,
+    path = "/api/members/{member_id}",
+    params(("member_id" = i32, Path)),
+    request_body = MemberUpdate,
+    responses(UpdateResponse, UpstreamError),
+)]
 pub async fn update<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
     State(MembersApi {
         members_admin_grpc_client: client,
@@ -91,7 +100,12 @@ pub async fn update<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
     Ok(UpdateResponse::Success(member.into()))
 }
 
-#[utoipa::path(delete, path = "/api/members/{member_id}", params(("member_id" = i32, Path)), responses(ArchiveResponse, UpstreamError))]
+#[utoipa::path(
+    delete,
+    path = "/api/members/{member_id}",
+    params(("member_id" = i32, Path)),
+    responses(ArchiveResponse, UpstreamError),
+)]
 pub async fn archive<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
     State(MembersApi {
         members_admin_grpc_client: mut client,
@@ -116,7 +130,12 @@ pub async fn archive<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
     Ok(ArchiveResponse::Success)
 }
 
-#[utoipa::path(get, path = "/api/members/{member_id}", params(("member_id" = i32, Path)), responses(DetailsResponse, UpstreamError))]
+#[utoipa::path(
+    get,
+    path = "/api/members/{member_id}",
+    params(("member_id" = i32, Path)),
+    responses(DetailsResponse, UpstreamError),
+)]
 pub async fn details<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
     State(MembersApi {
         members_admin_grpc_client: client,
@@ -133,7 +152,12 @@ pub async fn details<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
     Ok(DetailsResponse::Success(MemberDetails::from(member)))
 }
 
-#[utoipa::path(post, path = "/api/members", request_body = NewMember, responses(CreateResponse, UpstreamError))]
+#[utoipa::path(
+    post,
+    path = "/api/members",
+    request_body = NewMember,
+    responses(CreateResponse, UpstreamError),
+)]
 pub async fn create<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
     State(MembersApi {
         members_admin_grpc_client: mut client,
@@ -154,7 +178,12 @@ pub async fn create<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
     Ok(CreateResponse::Created(member.into()))
 }
 
-#[utoipa::path(post, path = "/api/members/bulk", request_body = BulkMembers, responses((status = 200, body = BulkResults), UpstreamError))]
+#[utoipa::path(
+    post,
+    path = "/api/members/bulk",
+    request_body = BulkMembers,
+    responses((status = 200, body = BulkResults), UpstreamError),
+)]
 pub async fn bulk_create<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
     State(MembersApi {
         members_admin_grpc_client: mut client,
