@@ -31,25 +31,6 @@ where
         .map_err(Into::into)
 }
 
-pub async fn call_admin<M, T, F>(
-    timeout: Duration,
-    message: M,
-    rpc: impl FnOnce(Request<M>) -> F,
-) -> Result<T, UpstreamError>
-where
-    F: Future<Output = Result<Response<T>, Status>>,
-{
-    call(timeout, message, |mut request| {
-        request.metadata_mut().insert(
-            "profile",
-            tonic::metadata::MetadataValue::from_static("core_admin"),
-        );
-
-        rpc(request)
-    })
-    .await
-}
-
 pub trait MembersGrpcClient: Clone + Send + Sync + 'static {
     fn get_member(
         &mut self,
@@ -216,8 +197,7 @@ pub(crate) mod fake {
         }
     }
 
-    fn assert_admin<M>(request: &Request<M>) {
-        assert_eq!(request.metadata().get("profile").unwrap(), "core_admin");
+    fn assert_deadline<M>(request: &Request<M>) {
         assert!(request.metadata().contains_key("grpc-timeout"));
     }
 
@@ -234,7 +214,7 @@ pub(crate) mod fake {
     /// };
     ///
     /// let mut client = admin.clone();
-    /// call_admin(timeout, ArchiveMemberRequest { member_id: 42 }, |request| async move {
+    /// call(timeout, ArchiveMemberRequest { member_id: 42 }, |request| async move {
     ///     client.archive_member(request).await
     /// })
     /// .await
@@ -261,7 +241,7 @@ pub(crate) mod fake {
             &mut self,
             request: Request<members::GetMemberRequest>,
         ) -> Result<Response<GetSensitiveMemberResponse>, Status> {
-            assert_admin(&request);
+            assert_deadline(&request);
             self.get_requests.lock().unwrap().push(request.into_inner());
             respond(self.get_response.clone(), "get_sensitive_member").await
         }
@@ -277,7 +257,7 @@ pub(crate) mod fake {
             &mut self,
             request: Request<CreateMemberRequest>,
         ) -> Result<Response<CreateMemberResponse>, Status> {
-            assert_admin(&request);
+            assert_deadline(&request);
             self.create_requests
                 .lock()
                 .unwrap()
@@ -289,7 +269,7 @@ pub(crate) mod fake {
             &mut self,
             request: Request<UpdateMemberRequest>,
         ) -> Result<Response<UpdateMemberResponse>, Status> {
-            assert_admin(&request);
+            assert_deadline(&request);
             self.update_requests
                 .lock()
                 .unwrap()
@@ -301,7 +281,7 @@ pub(crate) mod fake {
             &mut self,
             request: Request<BulkMemberOperationsRequest>,
         ) -> Result<Response<BulkMemberOperationsResponse>, Status> {
-            assert_admin(&request);
+            assert_deadline(&request);
             self.bulk_requests
                 .lock()
                 .unwrap()
@@ -313,7 +293,7 @@ pub(crate) mod fake {
             &mut self,
             request: Request<ArchiveMemberRequest>,
         ) -> Result<Response<ArchiveMemberResponse>, Status> {
-            assert_admin(&request);
+            assert_deadline(&request);
             self.archive_requests
                 .lock()
                 .unwrap()
@@ -369,7 +349,6 @@ pub(crate) mod fake {
             &mut self,
             request: Request<members::ListMembersRequest>,
         ) -> Result<Response<members::ListMembersResponse>, Status> {
-            assert!(request.metadata().get("profile").is_none());
             assert!(request.metadata().contains_key("grpc-timeout"));
             self.list_requests
                 .lock()
