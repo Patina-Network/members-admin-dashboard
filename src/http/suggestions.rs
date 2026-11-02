@@ -1,15 +1,15 @@
+use std::time::Duration;
+
 use axum::{
-    Json,
+    Json, Router,
     extract::{Query, State, rejection::QueryRejection},
     response::{IntoResponse, Response},
+    routing::get,
 };
 use members_grpc_service::members::{ListCareersRequest, ListIndustriesRequest};
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    grpc::{self, error::UpstreamError},
-    http::state::AppState,
-};
+use crate::grpc::{self, MembersGrpcClient, error::UpstreamError};
 
 #[derive(Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -55,27 +55,51 @@ impl IntoResponse for SuggestionsResponse {
     }
 }
 
+#[derive(Clone)]
+pub struct SuggestionsApi<MGC: MembersGrpcClient> {
+    members_grpc_client: MGC,
+    timeout: Duration,
+}
+
+impl<MGC: MembersGrpcClient> SuggestionsApi<MGC> {
+    pub fn new(members_grpc_client: MGC, timeout: Duration) -> Self {
+        Self {
+            members_grpc_client,
+            timeout,
+        }
+    }
+
+    pub fn router<S: Clone + Send + Sync + 'static>(self) -> Router<S> {
+        Router::new()
+            .route("/suggestions/careers", get(career_suggestions::<MGC>))
+            .route("/suggestions/industries", get(industry_suggestions::<MGC>))
+            .with_state(self)
+    }
+}
+
 #[utoipa::path(
     get,
     path = "/api/suggestions/careers",
     params(SuggestionQuery),
     responses(SuggestionsResponse, UpstreamError)
 )]
-pub async fn career_suggestions(
-    State(state): State<AppState>,
+pub async fn career_suggestions<MGC: MembersGrpcClient>(
+    State(SuggestionsApi {
+        members_grpc_client: mut client,
+        timeout,
+    }): State<SuggestionsApi<MGC>>,
     query: Result<Query<SuggestionQuery>, QueryRejection>,
 ) -> Result<SuggestionsResponse, UpstreamError> {
     let Query(SuggestionQuery { query, limit }) =
         query.map_err(|_| UpstreamError::InvalidArgument)?;
-    let mut client = state.members_client.clone();
 
     let response = grpc::call(
-        state.config.members_admin_service_grpc_timeout,
+        timeout,
         ListCareersRequest {
             query,
             limit: limit.unwrap_or_default(),
         },
-        |request| client.list_careers(request),
+        |request| async move { client.list_careers(request).await },
     )
     .await?;
 
@@ -88,21 +112,23 @@ pub async fn career_suggestions(
     params(SuggestionQuery),
     responses(SuggestionsResponse, UpstreamError)
 )]
-pub async fn industry_suggestions(
-    State(state): State<AppState>,
+pub async fn industry_suggestions<MGC: MembersGrpcClient>(
+    State(SuggestionsApi {
+        members_grpc_client: mut client,
+        timeout,
+    }): State<SuggestionsApi<MGC>>,
     query: Result<Query<SuggestionQuery>, QueryRejection>,
 ) -> Result<SuggestionsResponse, UpstreamError> {
     let Query(SuggestionQuery { query, limit }) =
         query.map_err(|_| UpstreamError::InvalidArgument)?;
-    let mut client = state.members_client.clone();
 
     let response = grpc::call(
-        state.config.members_admin_service_grpc_timeout,
+        timeout,
         ListIndustriesRequest {
             query,
             limit: limit.unwrap_or_default(),
         },
-        |request| client.list_industries(request),
+        |request| async move { client.list_industries(request).await },
     )
     .await?;
 
@@ -111,170 +137,131 @@ pub async fn industry_suggestions(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use axum::{
-        body::Body,
-        http::{Request, StatusCode},
+        extract::{Query, State},
+        http::{StatusCode, Uri},
+        response::{IntoResponse, Response},
     };
-    use axum_extra::extract::CookieJar;
     use http_body_util::BodyExt;
-    use members_grpc_service::members::{
-        self, ListCareersResponse, ListIndustriesResponse,
-        members_service_client::MembersServiceClient,
-        members_service_server::{MembersService, MembersServiceServer},
-    };
-    use tokio_stream::wrappers::TcpListenerStream;
-    use tonic::{Response as GrpcResponse, Status};
-    use tower::ServiceExt;
+    use members_grpc_service::members::{ListCareersResponse, ListIndustriesResponse};
+    use tonic::Code;
 
-    use crate::{
-        auth::session::{self, Principal},
-        http::state::test_state,
-    };
+    use super::{SuggestionsApi, career_suggestions, industry_suggestions};
+    use crate::grpc::fake::{FakeMembers, Outcome, sent};
 
-    struct SuggestionGrpc;
-
-    /// Echoes the forwarded query and limit, then repeats a value and adds an
-    /// empty one so the response shaping is observable.
-    fn reply(query: &str, limit: u32, value: &str) -> Result<Vec<String>, Status> {
-        if query == "fail" {
-            return Err(Status::unavailable("private upstream details"));
-        }
-
-        Ok(vec![
-            format!("{query}:{limit}"),
-            value.into(),
-            String::new(),
-            value.into(),
-        ])
+    fn suggestions_api(client: FakeMembers) -> State<SuggestionsApi<FakeMembers>> {
+        State(SuggestionsApi::new(client, Duration::from_secs(1)))
     }
 
-    #[tonic::async_trait]
-    impl MembersService for SuggestionGrpc {
-        async fn get_member(
-            &self,
-            _: tonic::Request<members::GetMemberRequest>,
-        ) -> Result<GrpcResponse<members::GetMemberResponse>, Status> {
-            Err(Status::unimplemented("get_member"))
-        }
-
-        async fn list_members(
-            &self,
-            _: tonic::Request<members::ListMembersRequest>,
-        ) -> Result<GrpcResponse<members::ListMembersResponse>, Status> {
-            Err(Status::unimplemented("list_members"))
-        }
-
-        async fn list_careers(
-            &self,
-            request: tonic::Request<members::ListCareersRequest>,
-        ) -> Result<GrpcResponse<ListCareersResponse>, Status> {
-            assert!(request.metadata().contains_key("grpc-timeout"));
-            let request = request.into_inner();
-            let careers = reply(&request.query, request.limit, "Engineer")?;
-            Ok(GrpcResponse::new(ListCareersResponse { careers }))
-        }
-
-        async fn list_industries(
-            &self,
-            request: tonic::Request<members::ListIndustriesRequest>,
-        ) -> Result<GrpcResponse<ListIndustriesResponse>, Status> {
-            assert!(request.metadata().contains_key("grpc-timeout"));
-            let request = request.into_inner();
-            let industries = reply(&request.query, request.limit, "Technology")?;
-            Ok(GrpcResponse::new(ListIndustriesResponse { industries }))
-        }
+    fn parse_query(
+        uri: &str,
+    ) -> Result<Query<super::SuggestionQuery>, axum::extract::rejection::QueryRejection> {
+        Query::try_from_uri(&uri.parse::<Uri>().unwrap())
     }
 
-    async fn get(router: axum::Router, uri: &str, cookie: &str) -> (StatusCode, serde_json::Value) {
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .uri(uri)
-                    .header("cookie", cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+    async fn status_and_body(response: Response) -> (StatusCode, serde_json::Value) {
         let status = response.status();
         let body = response.into_body().collect().await.unwrap().to_bytes();
-
         (status, serde_json::from_slice(&body).unwrap())
     }
 
+    fn duplicated_upstream_values() -> Vec<String> {
+        vec![
+            "Engineer".into(),
+            String::new(),
+            "Engineer".into(),
+            "Designer".into(),
+        ]
+    }
+
     #[tokio::test]
-    async fn suggestion_routes_forward_queries_and_map_upstream_results() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(
-            tonic::transport::Server::builder()
-                .add_service(MembersServiceServer::new(SuggestionGrpc))
-                .serve_with_incoming(TcpListenerStream::new(listener)),
-        );
+    async fn careers_forwards_query_and_drops_empty_and_duplicate_values() {
+        let members = FakeMembers {
+            careers_response: Outcome::Reply(ListCareersResponse {
+                careers: duplicated_upstream_values(),
+            }),
+            ..Default::default()
+        };
 
-        let mut state = test_state();
-        state.members_client = MembersServiceClient::new(
-            tonic::transport::Endpoint::from_shared(format!("http://{address}"))
-                .unwrap()
-                .connect()
-                .await
-                .unwrap(),
-        );
-        let jar = session::establish(
-            CookieJar::new(),
-            &state.auth.config,
-            &Principal {
-                id: "test".into(),
-                name: "Admin".into(),
-                email: Some("admin@example.com".into()),
-                csrf_token: "csrf".into(),
-                expires_at: time::OffsetDateTime::now_utc().unix_timestamp() + 60,
-            },
+        let response = career_suggestions(
+            suggestions_api(members.clone()),
+            parse_query("/?query=eng&limit=5"),
         )
-        .unwrap();
-        let cookie = format!(
-            "members_session={}",
-            jar.get("members_session").unwrap().value()
+        .await
+        .into_response();
+
+        let sent = sent(&members.careers_requests);
+        assert_eq!((sent[0].query.as_str(), sent[0].limit), ("eng", 5));
+        assert_eq!(
+            status_and_body(response).await,
+            (
+                StatusCode::OK,
+                serde_json::json!({"suggestions": ["Engineer", "Designer"]})
+            )
         );
-        let router = crate::http::app(state);
+    }
 
-        for (uri, status, body) in [
+    #[tokio::test]
+    async fn industries_defaults_missing_query_and_limit() {
+        let members = FakeMembers {
+            industries_response: Outcome::Reply(ListIndustriesResponse {
+                industries: vec!["Technology".into()],
+            }),
+            ..Default::default()
+        };
+
+        let response = industry_suggestions(suggestions_api(members.clone()), parse_query("/"))
+            .await
+            .into_response();
+
+        let sent = sent(&members.industries_requests);
+        assert_eq!((sent[0].query.as_str(), sent[0].limit), ("", 0));
+        assert_eq!(
+            status_and_body(response).await,
             (
-                "/api/suggestions/careers?query=eng&limit=5",
                 StatusCode::OK,
-                serde_json::json!({"suggestions": ["eng:5", "Engineer"]}),
-            ),
+                serde_json::json!({"suggestions": ["Technology"]})
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn upstream_failure_maps_status_without_leaking_details() {
+        let members = FakeMembers {
+            industries_response: Outcome::Fail(Code::Unavailable),
+            ..Default::default()
+        };
+
+        let response = industry_suggestions(suggestions_api(members), parse_query("/?query=x"))
+            .await
+            .into_response();
+
+        assert_eq!(
+            status_and_body(response).await,
             (
-                "/api/suggestions/careers",
-                StatusCode::OK,
-                serde_json::json!({"suggestions": [":0", "Engineer"]}),
-            ),
-            (
-                "/api/suggestions/industries?query=te%20ch",
-                StatusCode::OK,
-                serde_json::json!({"suggestions": ["te ch:0", "Technology"]}),
-            ),
-            (
-                "/api/suggestions/industries?query=fail",
                 StatusCode::SERVICE_UNAVAILABLE,
-                serde_json::json!({"error": "service unavailable"}),
-            ),
+                serde_json::json!({"error": "service unavailable"})
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_query_is_rejected_before_calling_upstream() {
+        let response = career_suggestions(
+            suggestions_api(FakeMembers::default()),
+            parse_query("/?limit=many"),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(
+            status_and_body(response).await,
             (
-                "/api/suggestions/careers?limit=many",
                 StatusCode::BAD_REQUEST,
-                serde_json::json!({"error": "invalid request"}),
-            ),
-        ] {
-            assert_eq!(
-                get(router.clone(), uri, &cookie).await,
-                (status, body),
-                "{uri}"
-            );
-        }
-
-        let (status, _) = get(router, "/api/suggestions/careers?query=eng", "").await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED);
-
-        server.abort();
+                serde_json::json!({"error": "invalid request"})
+            )
+        );
     }
 }

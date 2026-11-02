@@ -8,6 +8,7 @@ const baseDir = "src";
 export const exclusions = [
   `${baseDir}/main.rs`,
   `${baseDir}/config.rs`,
+  `${baseDir}/grpc/mod.rs`,
   `${baseDir}/http/mod.rs`,
   `${baseDir}/http/metrics.rs`,
   `${baseDir}/http/version.rs`,

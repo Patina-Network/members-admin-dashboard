@@ -3,28 +3,30 @@ pub mod openapi;
 pub mod state;
 
 mod health;
-mod members;
+pub mod members;
 mod metrics;
 mod spa;
-mod suggestions;
+pub mod suggestions;
 mod version;
 
 use std::any::Any;
 
 use axum::{
     Json, Router,
-    extract::DefaultBodyLimit,
     http::StatusCode,
     middleware,
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::get,
 };
 use serde::Serialize;
 use tower_http::catch_panic::{self};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
-use crate::http::state::AppState;
+use crate::{
+    grpc::{MembersAdminGrpcClient, MembersGrpcClient},
+    http::{auth::AuthApi, members::MembersApi, state::AppState, suggestions::SuggestionsApi},
+};
 
 /// JSON body of every `/api` error response; the frontend reads `error`.
 #[derive(Serialize, utoipa::ToSchema)]
@@ -32,28 +34,16 @@ pub struct ErrorBody {
     pub error: &'static str,
 }
 
-pub fn app(state: AppState) -> Router {
+pub fn app<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
+    state: AppState,
+    auth: AuthApi,
+    members: MembersApi<MGC, MAGC>,
+    suggestions: SuggestionsApi<MGC>,
+) -> Router {
     let api = Router::new()
-        .route("/members", get(members::list).post(members::create))
-        .route(
-            "/members/bulk",
-            post(members::bulk_create).layer(DefaultBodyLimit::max(2 * 1024 * 1024)),
-        )
-        .route("/auth/login", get(auth::login))
-        .route("/auth/callback", get(auth::callback))
-        .route("/auth/session", get(auth::current_session))
-        .route("/auth/logout", post(auth::logout))
-        .route(
-            "/members/{member_id}",
-            get(members::details)
-                .put(members::update)
-                .delete(members::archive),
-        )
-        .route("/suggestions/careers", get(suggestions::career_suggestions))
-        .route(
-            "/suggestions/industries",
-            get(suggestions::industry_suggestions),
-        )
+        .merge(auth.clone().router())
+        .merge(members.router())
+        .merge(suggestions.router())
         .fallback(not_found);
 
     let mut router = Router::new();
@@ -68,13 +58,13 @@ pub fn app(state: AppState) -> Router {
         .route("/readyz", get(health::ready))
         .route("/metrics", get(metrics::metrics))
         .route("/version", get(version::version))
-        .route("/oauth2/callback", get(auth::callback))
+        .route(
+            "/oauth2/callback",
+            get(auth::callback).with_state(auth.clone()),
+        )
         .nest("/api", api)
         .fallback(spa::spa)
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth::guard::protect,
-        ))
+        .layer(middleware::from_fn_with_state(auth, auth::guard::protect))
         .layer(catch_panic::CatchPanicLayer::custom(panic_response))
         .with_state(state)
 }

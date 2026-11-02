@@ -1,23 +1,13 @@
-use std::sync::Arc;
-
-use members_grpc_service::members::{
-    admin::members_admin_service_client::MembersAdminServiceClient,
-    members_service_client::MembersServiceClient,
-};
 use metrics_exporter_prometheus::PrometheusHandle;
 use metrics_process::Collector;
-use tonic::transport::Channel;
 
-use crate::{auth::provider::AzureProvider, config::Config};
+use crate::config::Config;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub members_client: MembersServiceClient<Channel>,
-    pub client: MembersAdminServiceClient<Channel>,
     pub prometheus_handle: PrometheusHandle,
     pub sys_collector: Collector,
     pub config: Config,
-    pub auth: Arc<AzureProvider>,
 }
 
 #[cfg(test)]
@@ -35,12 +25,6 @@ pub(crate) fn test_state() -> AppState {
     };
 
     AppState {
-        members_client: MembersServiceClient::new(
-            tonic::transport::Endpoint::from_static("http://localhost:50051").connect_lazy(),
-        ),
-        client: MembersAdminServiceClient::new(
-            tonic::transport::Endpoint::from_static("http://localhost:50051").connect_lazy(),
-        ),
         prometheus_handle: metrics_exporter_prometheus::PrometheusBuilder::new()
             .build_recorder()
             .handle(),
@@ -54,8 +38,27 @@ pub(crate) fn test_state() -> AppState {
             version: None,
             environment: None,
             log_filter: "info".into(),
-            auth: auth.clone(),
+            auth,
         },
-        auth: Arc::new(AzureProvider::new(auth).unwrap()),
     }
+}
+
+#[cfg(test)]
+pub(crate) fn test_auth() -> crate::http::auth::AuthApi {
+    let provider = crate::auth::provider::AzureProvider::new(test_state().config.auth).unwrap();
+    crate::http::auth::AuthApi::new(std::sync::Arc::new(provider))
+}
+
+#[cfg(test)]
+pub(crate) fn test_app() -> axum::Router {
+    use crate::grpc::fake::{FakeAdmin, FakeMembers};
+    use crate::http::{members::MembersApi, suggestions::SuggestionsApi};
+
+    let timeout = std::time::Duration::from_secs(1);
+    crate::http::app(
+        test_state(),
+        test_auth(),
+        MembersApi::new(FakeMembers::default(), FakeAdmin::default(), timeout),
+        SuggestionsApi::new(FakeMembers::default(), timeout),
+    )
 }

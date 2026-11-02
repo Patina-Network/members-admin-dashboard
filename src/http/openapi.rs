@@ -1,35 +1,9 @@
 use utoipa::OpenApi;
+use utoipauto::utoipauto;
 
+#[utoipauto(paths = "(./src/http from crate::http), (./src/auth from crate::auth)")]
 #[derive(OpenApi)]
-#[openapi(
-    paths(
-        super::version::version,
-        super::members::create,
-        super::members::bulk_create,
-        super::members::list,
-        super::auth::login,
-        super::auth::callback,
-        super::auth::current_session,
-        super::auth::logout,
-        super::members::update,
-        super::members::details,
-        super::members::archive,
-        super::suggestions::career_suggestions,
-        super::suggestions::industry_suggestions
-    ),
-    components(schemas(
-        super::ErrorBody,
-        super::members::Member,
-        super::members::MemberDetails,
-        super::members::MemberList,
-        super::members::NewMember,
-        super::auth::response::SessionBody,
-        super::auth::response::LogoutBody,
-        crate::auth::session::User,
-        super::members::MemberUpdate,
-        super::suggestions::SuggestionList
-    ))
-)]
+#[openapi()]
 pub struct ApiDoc;
 
 #[cfg(test)]

@@ -34,6 +34,7 @@ utoipa-swagger-ui = { version = "9", features = ["axum", "vendored"] }
 members-grpc-service = { version = "=1.0.6-beta.g16bc4a7b", registry = "patina" }
 axum-extra = { version = "0.12", features = ["cookie"] }
 jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
+utoipauto = "0.3.1"
 
 [dev-dependencies]
 tokio-stream = { version = "0.1", features = ["net"] }
