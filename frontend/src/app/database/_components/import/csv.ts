@@ -27,6 +27,9 @@ export const columns = [
   "role",
 ] as const;
 
+export const requiredColumns = columns.slice(0, 3);
+export const optionalColumns = columns.slice(3);
+
 export function parseMembersCsv(text: string): CsvMemberRow[] {
   if (new TextEncoder().encode(text).length > maxCsvBytes)
     throw new Error(
@@ -78,7 +81,7 @@ export function parseMembersCsv(text: string): CsvMemberRow[] {
     !header ||
     new Set(header).size !== header.length ||
     header.some((key) => !columns.includes(key as (typeof columns)[number])) ||
-    !columns.slice(0, 3).every((key) => header.includes(key))
+    !requiredColumns.every((key) => header.includes(key))
   )
     throw new Error(
       "Include email, first_name, last_name headers and only supported columns.",

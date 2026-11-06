@@ -12,13 +12,14 @@ use axum::{
 };
 use members_grpc_service::members::{
     self,
-    admin::{CreateMemberRequest, SensitiveMember},
+    admin::{BulkMemberOperationsRequest, CreateMemberRequest, SensitiveMember},
 };
 
 use crate::grpc::{self, MembersAdminGrpcClient, MembersGrpcClient, error::UpstreamError};
 use domain::{
-    ArchiveResponse, BulkMembers, BulkResult, BulkResults, CreateResponse, DetailsResponse,
-    ListResponse, Member, MemberDetails, MemberList, MemberUpdate, NewMember, UpdateResponse,
+    ArchiveResponse, BulkMembers, BulkOutcome, BulkResult, BulkResults, CreateResponse,
+    DetailsResponse, ListResponse, Member, MemberDetails, MemberList, MemberUpdate, NewMember,
+    UpdateResponse,
 };
 
 #[derive(Clone)]
@@ -46,7 +47,7 @@ impl<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient> MembersApi<MGC, MAGC>
             .route("/members", get(list::<MGC, MAGC>).post(create::<MGC, MAGC>))
             .route(
                 "/members/bulk",
-                post(bulk_create::<MGC, MAGC>).layer(DefaultBodyLimit::max(2 * 1024 * 1024)),
+                post(bulk_import::<MGC, MAGC>).layer(DefaultBodyLimit::max(2 * 1024 * 1024)),
             )
             .route(
                 "/members/{member_id}",
@@ -184,7 +185,7 @@ pub async fn create<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
     request_body = BulkMembers,
     responses((status = 200, body = BulkResults), UpstreamError),
 )]
-pub async fn bulk_create<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
+pub async fn bulk_import<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
     State(MembersApi {
         members_admin_grpc_client: mut client,
         timeout,
@@ -192,32 +193,27 @@ pub async fn bulk_create<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
     }): State<MembersApi<MGC, MAGC>>,
     body: Result<Json<BulkMembers>, JsonRejection>,
 ) -> Result<Json<BulkResults>, UpstreamError> {
-    use members::admin::{
-        BulkMemberOperationsRequest, MemberOperation, member_operation::Operation,
-        member_operation_result::Outcome,
-    };
+    let Json(BulkMembers { members, mode }) = body.map_err(|_| UpstreamError::InvalidArgument)?;
 
-    let Json(body) = body.map_err(|_| UpstreamError::InvalidArgument)?;
-    if body.members.is_empty() || body.members.len() > 1000 {
+    if members.is_empty() || members.len() > 1000 {
         return Err(UpstreamError::InvalidArgument);
     }
 
-    let mut results = Vec::new();
+    let mut results = Vec::with_capacity(members.len());
     let mut operations = Vec::new();
     let mut indices = Vec::new();
 
-    for (index, member) in body.members.into_iter().enumerate() {
+    for (index, member) in members.into_iter().enumerate() {
         match CreateMemberRequest::try_from(member) {
             Ok(request) => {
                 indices.push(index);
-                operations.push(MemberOperation {
-                    operation: Some(Operation::Create(request)),
-                });
+                operations.push(mode.operation(request));
             }
             Err(_) => results.push(BulkResult {
                 index,
-                member: None,
-                error: Some("Invalid member fields".into()),
+                outcome: BulkOutcome::Failed {
+                    error: "Invalid member fields".into(),
+                },
             }),
         }
     }
@@ -230,31 +226,22 @@ pub async fn bulk_create<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
         )
         .await?;
 
+        // Upstream indexes results by position in `operations`, not by request row.
         let mut outcomes: BTreeMap<_, _> = response
             .results
             .into_iter()
             .map(|row| (row.index as usize, row.outcome))
             .collect();
 
-        for (position, index) in indices.into_iter().enumerate() {
-            let outcome = outcomes.remove(&position).flatten();
-            let (member, error) = match outcome {
-                Some(Outcome::Created(created)) if created.member.is_some() => {
-                    (created.member.map(Into::into), None)
-                }
-                Some(Outcome::Failed(failed)) => (None, Some(failed.error)),
-                _ => (
-                    None,
-                    Some("Could not confirm result. Refresh before retrying.".into()),
-                ),
-            };
-
-            results.push(BulkResult {
-                index,
-                member,
-                error,
-            });
-        }
+        results.extend(
+            indices
+                .into_iter()
+                .enumerate()
+                .map(|(position, index)| BulkResult {
+                    index,
+                    outcome: outcomes.remove(&position).flatten().into(),
+                }),
+        );
     }
 
     results.sort_by_key(|row| row.index);
@@ -1149,7 +1136,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bulk_create_sends_create_operations_and_maps_indexed_results() {
+    async fn bulk_import_sends_create_operations_and_maps_indexed_results() {
         let admin = FakeAdmin {
             bulk_response: bulk_outcome(),
             ..Default::default()
@@ -1160,7 +1147,7 @@ mod tests {
     ] }))
         .unwrap();
 
-        let response = super::bulk_create(api(admin.clone()), Ok(Json(body)))
+        let response = super::bulk_import(api(admin.clone()), Ok(Json(body)))
             .await
             .into_response();
 
@@ -1176,8 +1163,154 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = json_body(response).await;
         assert_eq!(body["results"][0]["index"], 0);
+        assert_eq!(body["results"][0]["outcome"], "created");
         assert_eq!(body["results"][0]["member"]["member_id"], 42);
-        assert_eq!(body["results"][1]["error"], "Duplicate email");
+        assert_eq!(
+            body["results"][1],
+            serde_json::json!({ "index": 1, "outcome": "failed", "error": "Duplicate email" })
+        );
+    }
+
+    #[tokio::test]
+    async fn bulk_upsert_sends_upserts_without_blank_fields_and_maps_each_outcome() {
+        use members::admin::{
+            MemberCreated, MemberOperationFailed, MemberOperationResult, MemberUnchanged,
+            MemberUpdated, member_operation::Operation, member_operation_result,
+        };
+
+        let updated = SensitiveMember {
+            member_id: 7,
+            career: Some("Engineer".into()),
+            ..sensitive_member()
+        };
+        let admin = FakeAdmin {
+            bulk_response: Outcome::Reply(BulkMemberOperationsResponse {
+                results: vec![
+                    MemberOperationResult {
+                        index: 0,
+                        outcome: Some(member_operation_result::Outcome::Updated(MemberUpdated {
+                            before: Some(sensitive_member()),
+                            after: Some(updated),
+                            changed_fields: None,
+                        })),
+                    },
+                    MemberOperationResult {
+                        index: 1,
+                        outcome: Some(member_operation_result::Outcome::Unchanged(
+                            MemberUnchanged {
+                                member: Some(sensitive_member()),
+                            },
+                        )),
+                    },
+                    MemberOperationResult {
+                        index: 2,
+                        outcome: Some(member_operation_result::Outcome::Created(MemberCreated {
+                            member: Some(SensitiveMember {
+                                member_id: 8,
+                                ..sensitive_member()
+                            }),
+                        })),
+                    },
+                    MemberOperationResult {
+                        index: 3,
+                        outcome: Some(member_operation_result::Outcome::Failed(
+                            MemberOperationFailed {
+                                error: "Duplicate LinkedIn".into(),
+                            },
+                        )),
+                    },
+                ],
+            }),
+            ..Default::default()
+        };
+        let body = serde_json::from_value(serde_json::json!({ "mode": "upsert", "members": [
+            { "email": "person@example.com", "first_name": "A", "last_name": "B", "career": "Engineer", "industry": " " },
+            { "email": "person@example.com", "first_name": "First", "last_name": "Last" },
+            { "email": "new@example.com", "first_name": "N", "last_name": "M" },
+            { "email": "taken@example.com", "first_name": "T", "last_name": "U" },
+            { "email": " ", "first_name": "No", "last_name": "Email" }
+        ] }))
+        .unwrap();
+
+        let response = super::bulk_import(api(admin.clone()), Ok(Json(body)))
+            .await
+            .into_response();
+
+        let operations = sent(&admin.bulk_requests).remove(0).operations;
+        assert_eq!(operations.len(), 4, "invalid rows are not sent");
+        let Some(Operation::Upsert(upsert)) = &operations[0].operation else {
+            panic!("expected an upsert operation");
+        };
+        let member = upsert.member.as_ref().unwrap();
+        assert_eq!(member.career.as_deref(), Some("Engineer"));
+        assert_eq!(
+            member.industry, None,
+            "blank fields must not clear stored values"
+        );
+        assert_eq!(member.profile, None);
+        assert!(
+            operations
+                .iter()
+                .all(|operation| matches!(operation.operation, Some(Operation::Upsert(_))))
+        );
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        let summary: Vec<_> = body["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                (
+                    row["index"].as_u64().unwrap(),
+                    row["outcome"].as_str().unwrap(),
+                    row["member"]["member_id"].as_i64(),
+                    row["error"].as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                (0, "updated", Some(7), None),
+                (1, "unchanged", Some(42), None),
+                (2, "created", Some(8), None),
+                (3, "failed", None, Some("Duplicate LinkedIn")),
+                (4, "failed", None, Some("Invalid member fields")),
+            ]
+        );
+        assert_eq!(body["results"][0]["member"]["career"], "Engineer");
+    }
+
+    #[tokio::test]
+    async fn bulk_rejects_an_unknown_mode_before_calling_upstream() {
+        use tower::ServiceExt;
+
+        let admin = FakeAdmin::default();
+        let router = MembersApi::new(
+            FakeMembers::default(),
+            admin.clone(),
+            Duration::from_secs(1),
+        )
+        .router::<()>();
+        let body = serde_json::json!({ "mode": "replace", "members": [
+            { "email": "person@example.com", "first_name": "A", "last_name": "B" }
+        ] });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/members/bulk")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(sent(&admin.bulk_requests).is_empty());
     }
 
     #[tokio::test]
