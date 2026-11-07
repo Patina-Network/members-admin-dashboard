@@ -1562,7 +1562,10 @@ it("previews CSV, cancels to upload, submits bulk and shows row outcomes", async
   expect(screen.getByText(/Drag.*CSV/i)).toBeInTheDocument();
 
   await upload();
-  await user.click(await screen.findByRole("button", { name: "Import" }));
+  // Both clicks land before the pending state re-renders the button as disabled.
+  const importButton = await screen.findByRole("button", { name: "Import" });
+  fireEvent.click(importButton);
+  fireEvent.click(importButton);
   await screen.findByText("1 added, 1 failed");
 
   expect(screen.getByText("Duplicate email")).toBeInTheDocument();
@@ -1589,11 +1592,21 @@ it("previews CSV, cancels to upload, submits bulk and shows row outcomes", async
 
 it("updates existing members when chosen and reports each row's outcome", async () => {
   const refresh = deferred<MemberListResult>();
+  const untouched = { ...member, member_id: 3, email: "same@example.com" };
   const created = { ...member, member_id: 2, email: "new@example.com" };
-  const changed = { ...member, career: "Engineer" };
+  const changed = { ...member, career: "Staff Engineer" };
   vi.mocked(list)
-    .mockResolvedValueOnce(memberList([member]))
+    .mockResolvedValueOnce(memberList([member, untouched]))
     .mockReturnValueOnce(refresh.promise);
+  vi.mocked(details)
+    .mockResolvedValueOnce({
+      ...savedMember(),
+      data: { ...member, profile: "Existing notes" },
+    })
+    .mockResolvedValueOnce({
+      ...savedMember(),
+      data: { ...changed, profile: "Imported notes" },
+    });
 
   vi.mocked(currentSession).mockResolvedValue({
     data: { user: { isAdmin: true }, csrfToken: "token" },
@@ -1603,7 +1616,7 @@ it("updates existing members when chosen and reports each row's outcome", async 
     data: {
       results: [
         { index: 0, outcome: "updated", member: changed },
-        { index: 1, outcome: "unchanged", member },
+        { index: 1, outcome: "unchanged", member: untouched },
         { index: 2, outcome: "created", member: created },
         { index: 3, outcome: "failed", error: "Duplicate LinkedIn" },
       ],
@@ -1615,6 +1628,12 @@ it("updates existing members when chosen and reports each row's outcome", async 
   const user = userEvent.setup();
   await screen.findByText(member.email);
 
+  // An open details panel must pick up the imported changes.
+  await user.click(
+    screen.getByRole("button", { name: "Show additional info for member 1" }),
+  );
+  expect(await screen.findByText("Existing notes")).toBeInTheDocument();
+
   await user.click(screen.getByRole("button", { name: "Add" }));
   await user.click(
     screen.getByRole("button", { name: "Upload Bulk Member(s)" }),
@@ -1623,7 +1642,7 @@ it("updates existing members when chosen and reports each row's outcome", async 
   const file = new File([""], "members.csv", { type: "text/csv" });
   Object.defineProperty(file, "text", {
     value: async () =>
-      "email,first_name,last_name,career\nperson@example.com,First,Last,Engineer\nperson@example.com,First,Last,\nnew@example.com,N,M,\ntaken@example.com,T,U,",
+      "email,first_name,last_name,career\nperson@example.com,First,Last,Engineer\nsame@example.com,First,Last,\nnew@example.com,N,M,\ntaken@example.com,T,U,",
   });
   await user.upload(screen.getByLabelText("Choose CSV file"), file);
 
@@ -1650,7 +1669,13 @@ it("updates existing members when chosen and reports each row's outcome", async 
       .map((row) => within(row).getAllByRole("cell")[1]?.textContent),
   ).toEqual(["Updated", "Unchanged", "Added", "Duplicate LinkedIn"]);
 
-  await act(async () => refresh.resolve(memberList([changed, created])));
+  // Comes from the merged list cache; the list refresh is still pending.
+  expect(screen.getByText("Staff Engineer")).toBeInTheDocument();
+  expect(await screen.findByText("Imported notes")).toBeInTheDocument();
+
+  await act(async () =>
+    refresh.resolve(memberList([changed, untouched, created])),
+  );
 });
 
 it("preserves confirmed bulk imports and counts when the list refresh fails", async () => {

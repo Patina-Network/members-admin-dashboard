@@ -1,5 +1,5 @@
 import type { CsvMemberRow } from "@/app/database/_components/shared/types";
-import type { NewMember } from "@/lib/api/generated/types.gen";
+import type { BulkMembers, NewMember } from "@/lib/api/generated/types.gen";
 
 import { isMemberRole } from "@/app/database/_components/shared/memberRoles";
 import {
@@ -136,10 +136,14 @@ export function parseMembersCsv(text: string): CsvMemberRow[] {
     return { sourceRow, member };
   });
 
+  // Measured with the longer `mode` value, because the mode is picked after parsing.
+  const largestRequest: BulkMembers = {
+    members: rows.map((row) => row.member),
+    mode: "upsert",
+  };
   if (
-    new TextEncoder().encode(
-      JSON.stringify({ members: rows.map((row) => row.member) }),
-    ).length > maxBulkRequestBytes
+    new TextEncoder().encode(JSON.stringify(largestRequest)).length >
+    maxBulkRequestBytes
   )
     throw new Error(
       "This CSV expands beyond the import size limit. Split it into smaller files or shorten long text fields.",

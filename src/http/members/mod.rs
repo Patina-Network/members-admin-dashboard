@@ -1223,12 +1223,14 @@ mod tests {
             }),
             ..Default::default()
         };
+        // The invalid row comes first, so every valid row's CSV index is one past
+        // its position in `operations`, which is what upstream numbers results by.
         let body = serde_json::from_value(serde_json::json!({ "mode": "upsert", "members": [
+            { "email": " ", "first_name": "No", "last_name": "Email" },
             { "email": "person@example.com", "first_name": "A", "last_name": "B", "career": "Engineer", "industry": " " },
             { "email": "person@example.com", "first_name": "First", "last_name": "Last" },
             { "email": "new@example.com", "first_name": "N", "last_name": "M" },
-            { "email": "taken@example.com", "first_name": "T", "last_name": "U" },
-            { "email": " ", "first_name": "No", "last_name": "Email" }
+            { "email": "taken@example.com", "first_name": "T", "last_name": "U" }
         ] }))
         .unwrap();
 
@@ -1272,14 +1274,14 @@ mod tests {
         assert_eq!(
             summary,
             [
-                (0, "updated", Some(7), None),
-                (1, "unchanged", Some(42), None),
-                (2, "created", Some(8), None),
-                (3, "failed", None, Some("Duplicate LinkedIn")),
-                (4, "failed", None, Some("Invalid member fields")),
+                (0, "failed", None, Some("Invalid member fields")),
+                (1, "updated", Some(7), None),
+                (2, "unchanged", Some(42), None),
+                (3, "created", Some(8), None),
+                (4, "failed", None, Some("Duplicate LinkedIn")),
             ]
         );
-        assert_eq!(body["results"][0]["member"]["career"], "Engineer");
+        assert_eq!(body["results"][1]["member"]["career"], "Engineer");
     }
 
     #[tokio::test]

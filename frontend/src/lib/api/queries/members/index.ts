@@ -284,9 +284,16 @@ export const useBulkImportMembersMutation = () => {
       await queryClient.cancelQueries({ queryKey: membersKey });
 
       const imported = new Map<number, Member>();
-      for (const result of data?.results ?? [])
-        if (result.outcome !== "failed")
-          imported.set(result.member.member_id, result.member);
+      for (const result of data?.results ?? []) {
+        if (result.outcome === "failed") continue;
+        imported.set(result.member.member_id, result.member);
+        if (result.outcome === "updated")
+          void queryClient.invalidateQueries({
+            queryKey: detailsQueryKey({
+              path: { member_id: result.member.member_id },
+            }),
+          });
+      }
 
       if (imported.size) {
         queryClient.setQueryData<MemberList>(membersKey, (current) => {

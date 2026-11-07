@@ -353,6 +353,7 @@ export function useBulkImport(onPending: (pending: boolean) => void) {
   const [reading, setReading] = useState(false);
   const [upsert, setUpsert] = useState(false);
   const mutation = useBulkImportMembersMutation();
+  const [submitting, setSubmitting] = useState(false);
 
   // Keeps the modal open while a file is parsing or an import is running.
   useEffect(() => {
@@ -381,23 +382,28 @@ export function useBulkImport(onPending: (pending: boolean) => void) {
       "Choose one .csv file of 1 MB or less. Split larger files into smaller imports.",
     );
 
-  const submit = () =>
+  const submit = () => {
+    setSubmitting(true);
     mutation.mutate({
       members: rows.map((row) => row.member),
       mode: upsert ? "upsert" : "create",
     });
+  };
 
   const reset = () => {
+    setSubmitting(false);
     setRows([]);
     setFileName("");
     setCsvError("");
     mutation.reset();
   };
 
+  // `submitting` flips on the click's own render, so the Import button is
+  // disabled before a second click; `mutation.isPending` flips a tick later.
   const phase: BulkImportPhase =
-    mutation.isPending ? "pending"
-    : mutation.data ? "done"
+    mutation.data ? "done"
     : mutation.error ? "unconfirmed"
+    : submitting ? "pending"
     : "ready";
 
   const results = mutation.data?.results ?? [];
