@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type {
+  BulkMembers,
   Member,
   MemberList,
   MemberUpdate,
@@ -13,7 +14,7 @@ import {
 } from "@/lib/api/generated/@tanstack/react-query.gen";
 import {
   archive,
-  bulkCreate,
+  bulkImport,
   create,
   currentSession,
   details,
@@ -253,18 +254,18 @@ export const useArchiveMemberMutation = () => {
   });
 };
 
-export const useBulkAddMembersMutation = () => {
+export const useBulkImportMembersMutation = () => {
   const queryClient = useQueryClient();
 
   return useMutation({
     retry: false,
-    mutationFn: async (members: NewMember[]) => {
+    mutationFn: async (body: BulkMembers) => {
       const uncertain =
         "Could not confirm import results. Refresh before retrying.";
 
       const csrfToken = await getAdminCsrfToken("adding");
-      const result = await bulkCreate({
-        body: { members },
+      const result = await bulkImport({
+        body,
         headers: { "X-CSRF-Token": csrfToken },
       }).catch(() => {
         throw new Error(uncertain);
@@ -284,7 +285,14 @@ export const useBulkAddMembersMutation = () => {
 
       const imported = new Map<number, Member>();
       for (const result of data?.results ?? []) {
-        if (result.member) imported.set(result.member.member_id, result.member);
+        if (result.outcome === "failed") continue;
+        imported.set(result.member.member_id, result.member);
+        if (result.outcome === "updated")
+          void queryClient.invalidateQueries({
+            queryKey: detailsQueryKey({
+              path: { member_id: result.member.member_id },
+            }),
+          });
       }
 
       if (imported.size) {

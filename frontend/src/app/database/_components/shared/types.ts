@@ -71,3 +71,15 @@ export type CsvMemberRow = {
   sourceRow: number;
   member: NewMember;
 };
+
+export type CsvUploadProps = {
+  reading: boolean;
+  onDrop: (files: File[]) => void;
+  onReject: () => void;
+  onBack: () => void;
+};
+
+/** `unconfirmed`: the request failed or timed out, so rows may or may not have been written. */
+export type BulkImportPhase = "ready" | "pending" | "done" | "unconfirmed";
+
+export type BulkRowStatus = { label: string; color: string };

@@ -5,7 +5,11 @@ use axum::{
 };
 use members_grpc_service::members::{
     self,
-    admin::{CreateMemberRequest, SensitiveMember},
+    admin::{
+        CreateMemberRequest, MemberCreated, MemberOperation, MemberOperationFailed,
+        MemberUnchanged, MemberUpdated, SensitiveMember, UpsertMemberRequest,
+        member_operation::Operation, member_operation_result::Outcome,
+    },
 };
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -225,16 +229,80 @@ impl IntoResponse for CreateResponse {
     }
 }
 
+#[derive(Clone, Copy, Default, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BulkMode {
+    /// Fail the row.
+    #[default]
+    Create,
+    /// Update the existing member. Blank optional fields keep their stored values.
+    Upsert,
+}
+
+impl BulkMode {
+    pub fn operation(self, member: CreateMemberRequest) -> MemberOperation {
+        let operation = match self {
+            Self::Create => Operation::Create(member),
+            Self::Upsert => Operation::Upsert(UpsertMemberRequest {
+                member: Some(member),
+            }),
+        };
+
+        MemberOperation {
+            operation: Some(operation),
+        }
+    }
+}
+
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct BulkMembers {
     pub members: Vec<NewMember>,
+    #[serde(default)]
+    pub mode: BulkMode,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum BulkOutcome {
+    Created { member: Member },
+    Updated { member: Member },
+    Unchanged { member: Member },
+    Failed { error: String },
+}
+
+/// A missing outcome, or one without a member, means the write can't be confirmed.
+impl From<Option<Outcome>> for BulkOutcome {
+    fn from(outcome: Option<Outcome>) -> Self {
+        match outcome {
+            Some(Outcome::Created(MemberCreated {
+                member: Some(member),
+            })) => Self::Created {
+                member: member.into(),
+            },
+            Some(Outcome::Updated(MemberUpdated {
+                after: Some(member),
+                ..
+            })) => Self::Updated {
+                member: member.into(),
+            },
+            Some(Outcome::Unchanged(MemberUnchanged {
+                member: Some(member),
+            })) => Self::Unchanged {
+                member: member.into(),
+            },
+            Some(Outcome::Failed(MemberOperationFailed { error })) => Self::Failed { error },
+            _ => Self::Failed {
+                error: "Could not confirm result. Refresh before retrying.".into(),
+            },
+        }
+    }
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct BulkResult {
     pub index: usize,
-    pub member: Option<Member>,
-    pub error: Option<String>,
+    #[serde(flatten)]
+    pub outcome: BulkOutcome,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]

@@ -18,7 +18,7 @@ import type { MemberDetails } from "@/lib/api/generated/types.gen";
 import DatabasePage from "@/app/database/Database.page";
 import {
   archive,
-  bulkCreate,
+  bulkImport,
   careerSuggestions,
   create,
   currentSession,
@@ -30,7 +30,7 @@ import {
 
 vi.mock("@/lib/api/generated/sdk.gen", () => ({
   archive: vi.fn(),
-  bulkCreate: vi.fn(),
+  bulkImport: vi.fn(),
   careerSuggestions: vi.fn(),
   create: vi.fn(),
   currentSession: vi.fn(),
@@ -139,7 +139,13 @@ const savedMember = () => ({
   response,
 });
 
-const memberList = (members: (typeof member)[]) => ({
+type MemberListResult = {
+  data: { members: MemberDetails[]; total: number };
+  request: Request;
+  response: Response;
+};
+
+const memberList = (members: MemberDetails[]): MemberListResult => ({
   data: { members, total: members.length },
   request: new Request("http://localhost/api/members"),
   response,
@@ -950,7 +956,7 @@ describe("edit member", () => {
 
 describe("member list states", () => {
   it("distinguishes loading from an empty result", async () => {
-    const pending = deferred<ReturnType<typeof memberList>>();
+    const pending = deferred<MemberListResult>();
     vi.mocked(list).mockReturnValueOnce(pending.promise);
 
     renderPage();
@@ -1043,7 +1049,7 @@ describe("member list states", () => {
 
     cleanup();
 
-    const pending = deferred<ReturnType<typeof memberList>>();
+    const pending = deferred<MemberListResult>();
     vi.mocked(list).mockReturnValueOnce(pending.promise);
     renderPage(false, savedUrl);
 
@@ -1156,8 +1162,8 @@ describe("member list states", () => {
   });
 
   it("shows the new member before a slow list finishes", async () => {
-    const pending = deferred<ReturnType<typeof memberList>>();
-    const refresh = deferred<ReturnType<typeof memberList>>();
+    const pending = deferred<MemberListResult>();
+    const refresh = deferred<MemberListResult>();
     vi.mocked(list)
       .mockReturnValueOnce(pending.promise)
       .mockReturnValueOnce(refresh.promise);
@@ -1181,7 +1187,7 @@ describe("member list states", () => {
   });
 
   it("refetches after creation while the initial request is pending", async () => {
-    const pending = deferred<ReturnType<typeof memberList>>();
+    const pending = deferred<MemberListResult>();
     vi.mocked(list)
       .mockReturnValueOnce(pending.promise)
       .mockResolvedValue(memberList([member]));
@@ -1397,7 +1403,7 @@ it.each(["/database?page=2", "/database?page=2&search=Ada&role=mentor"])(
       role: "mentor" as const,
     }));
 
-    const pending = deferred<ReturnType<typeof memberList>>();
+    const pending = deferred<MemberListResult>();
     vi.mocked(list)
       .mockResolvedValueOnce(memberList(members))
       .mockReturnValue(pending.promise);
@@ -1444,7 +1450,7 @@ it.each([false, true])(
       email: `history${i}@example.com`,
     }));
 
-    const pending = deferred<ReturnType<typeof memberList>>();
+    const pending = deferred<MemberListResult>();
     vi.mocked(list)
       .mockResolvedValueOnce(memberList(members))
       .mockReturnValue(pending.promise);
@@ -1491,7 +1497,7 @@ it.each([false, true])(
 );
 
 it("previews CSV, cancels to upload, submits bulk and shows row outcomes", async () => {
-  const refresh = deferred<ReturnType<typeof memberList>>();
+  const refresh = deferred<MemberListResult>();
   vi.mocked(list)
     .mockResolvedValueOnce(memberList([member]))
     .mockReturnValueOnce(refresh.promise);
@@ -1500,11 +1506,11 @@ it("previews CSV, cancels to upload, submits bulk and shows row outcomes", async
     data: { user: { isAdmin: true }, csrfToken: "token" },
     response,
   } as never);
-  vi.mocked(bulkCreate).mockResolvedValue({
+  vi.mocked(bulkImport).mockResolvedValue({
     data: {
       results: [
-        { index: 0, member, error: null },
-        { index: 1, member: null, error: "Duplicate email" },
+        { index: 0, outcome: "created", member },
+        { index: 1, outcome: "failed", error: "Duplicate email" },
       ],
     },
     response,
@@ -1538,7 +1544,7 @@ it("previews CSV, cancels to upload, submits bulk and shows row outcomes", async
 
   await upload();
   await screen.findByText(
-    'Ready to add 2 members. Click "Add All" to confirm.',
+    'Ready to import 2 members. Click "Import" to confirm.',
   );
 
   expect(screen.getByText("File name: members.csv")).toBeInTheDocument();
@@ -1556,18 +1562,22 @@ it("previews CSV, cancels to upload, submits bulk and shows row outcomes", async
   expect(screen.getByText(/Drag.*CSV/i)).toBeInTheDocument();
 
   await upload();
-  await user.click(await screen.findByRole("button", { name: "Add All" }));
+  // Both clicks land before the pending state re-renders the button as disabled.
+  const importButton = await screen.findByRole("button", { name: "Import" });
+  fireEvent.click(importButton);
+  fireEvent.click(importButton);
   await screen.findByText("1 added, 1 failed");
 
   expect(screen.getByText("Duplicate email")).toBeInTheDocument();
-  expect(bulkCreate).toHaveBeenCalledTimes(1);
-  expect(bulkCreate).toHaveBeenCalledWith(
+  expect(bulkImport).toHaveBeenCalledTimes(1);
+  expect(bulkImport).toHaveBeenCalledWith(
     expect.objectContaining({
       body: {
         members: [
           { email: "a@b.com", first_name: "A", last_name: "B", role: "mentor" },
           { email: "a@b.com", first_name: "A", last_name: "B", role: "mentee" },
         ],
+        mode: "create",
       },
     }),
   );
@@ -1580,8 +1590,96 @@ it("previews CSV, cancels to upload, submits bulk and shows row outcomes", async
   await act(async () => refresh.resolve(memberList([member])));
 });
 
+it("updates existing members when chosen and reports each row's outcome", async () => {
+  const refresh = deferred<MemberListResult>();
+  const untouched = { ...member, member_id: 3, email: "same@example.com" };
+  const created = { ...member, member_id: 2, email: "new@example.com" };
+  const changed = { ...member, career: "Staff Engineer" };
+  vi.mocked(list)
+    .mockResolvedValueOnce(memberList([member, untouched]))
+    .mockReturnValueOnce(refresh.promise);
+  vi.mocked(details)
+    .mockResolvedValueOnce({
+      ...savedMember(),
+      data: { ...member, profile: "Existing notes" },
+    })
+    .mockResolvedValueOnce({
+      ...savedMember(),
+      data: { ...changed, profile: "Imported notes" },
+    });
+
+  vi.mocked(currentSession).mockResolvedValue({
+    data: { user: { isAdmin: true }, csrfToken: "token" },
+    response,
+  } as never);
+  vi.mocked(bulkImport).mockResolvedValue({
+    data: {
+      results: [
+        { index: 0, outcome: "updated", member: changed },
+        { index: 1, outcome: "unchanged", member: untouched },
+        { index: 2, outcome: "created", member: created },
+        { index: 3, outcome: "failed", error: "Duplicate LinkedIn" },
+      ],
+    },
+    response,
+  } as never);
+
+  renderPage();
+  const user = userEvent.setup();
+  await screen.findByText(member.email);
+
+  // An open details panel must pick up the imported changes.
+  await user.click(
+    screen.getByRole("button", { name: "Show additional info for member 1" }),
+  );
+  expect(await screen.findByText("Existing notes")).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "Add" }));
+  await user.click(
+    screen.getByRole("button", { name: "Upload Bulk Member(s)" }),
+  );
+
+  const file = new File([""], "members.csv", { type: "text/csv" });
+  Object.defineProperty(file, "text", {
+    value: async () =>
+      "email,first_name,last_name,career\nperson@example.com,First,Last,Engineer\nsame@example.com,First,Last,\nnew@example.com,N,M,\ntaken@example.com,T,U,",
+  });
+  await user.upload(screen.getByLabelText("Choose CSV file"), file);
+
+  await user.click(
+    await screen.findByRole("checkbox", { name: /Update existing members/ }),
+  );
+  await screen.findByText(
+    'Ready to import 4 members. Click "Import" to confirm.',
+  );
+  await user.click(screen.getByRole("button", { name: "Import" }));
+
+  await screen.findByText("1 added, 1 updated, 1 unchanged, 1 failed");
+  expect(bulkImport).toHaveBeenCalledWith(
+    expect.objectContaining({
+      body: expect.objectContaining({ mode: "upsert" }),
+    }),
+  );
+
+  const preview = within(screen.getByRole("dialog")).getByRole("table");
+  expect(
+    within(preview)
+      .getAllByRole("row")
+      .slice(1)
+      .map((row) => within(row).getAllByRole("cell")[1]?.textContent),
+  ).toEqual(["Updated", "Unchanged", "Added", "Duplicate LinkedIn"]);
+
+  // Comes from the merged list cache; the list refresh is still pending.
+  expect(screen.getByText("Staff Engineer")).toBeInTheDocument();
+  expect(await screen.findByText("Imported notes")).toBeInTheDocument();
+
+  await act(async () =>
+    refresh.resolve(memberList([changed, untouched, created])),
+  );
+});
+
 it("preserves confirmed bulk imports and counts when the list refresh fails", async () => {
-  const refresh = deferred<ReturnType<typeof memberList>>();
+  const refresh = deferred<MemberListResult>();
   const imported = { ...member, member_id: 2, email: "imported@example.com" };
   vi.mocked(list)
     .mockResolvedValueOnce(memberList([member]))
@@ -1591,12 +1689,12 @@ it("preserves confirmed bulk imports and counts when the list refresh fails", as
     data: { user: { isAdmin: true }, csrfToken: "token" },
     response,
   } as never);
-  vi.mocked(bulkCreate).mockResolvedValue({
+  vi.mocked(bulkImport).mockResolvedValue({
     data: {
       results: [
-        { index: 0, member: imported, error: null },
-        { index: 1, member, error: null },
-        { index: 2, member: null, error: "Duplicate email" },
+        { index: 0, outcome: "created", member: imported },
+        { index: 1, outcome: "unchanged", member },
+        { index: 2, outcome: "failed", error: "Duplicate email" },
       ],
     },
     response,
@@ -1618,9 +1716,9 @@ it("preserves confirmed bulk imports and counts when the list refresh fails", as
   });
 
   await user.upload(screen.getByLabelText("Choose CSV file"), file);
-  await user.click(await screen.findByRole("button", { name: "Add All" }));
+  await user.click(await screen.findByRole("button", { name: "Import" }));
 
-  await screen.findByText("2 added, 1 failed");
+  await screen.findByText("1 added, 1 unchanged, 1 failed");
   expect(screen.getByText("2 members")).toBeInTheDocument();
 
   await act(async () => refresh.reject(new Error("List refresh failed")));
@@ -1665,9 +1763,9 @@ it.each(["invalid date", "oversized file"])(
       scenario === "invalid date" ? "Row 2: joined_at" : "1 MB or less",
     );
     expect(
-      screen.queryByRole("button", { name: "Add All" }),
+      screen.queryByRole("button", { name: "Import" }),
     ).not.toBeInTheDocument();
     expect(screen.getByLabelText("Choose CSV file")).toBeInTheDocument();
-    expect(bulkCreate).not.toHaveBeenCalled();
+    expect(bulkImport).not.toHaveBeenCalled();
   },
 );

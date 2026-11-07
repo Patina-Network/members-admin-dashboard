@@ -92,6 +92,33 @@ describe("CSV regression cases", () => {
     );
   });
 
+  it("counts the import mode toward the HTTP request limit", () => {
+    const member = {
+      email: "a@b.com",
+      first_name: "A",
+      last_name: "B",
+      profile: "",
+    };
+    const emptyRequestBytes = new TextEncoder().encode(
+      JSON.stringify({ members: [member], mode: "upsert" }),
+    ).length;
+    const missing = maxBulkRequestBytes + 1 - emptyRequestBytes;
+    // Each NUL becomes the 6-byte JSON escape \u0000.
+    const profile =
+      "\u0000".repeat(Math.floor(missing / 6)) + "x".repeat(missing % 6);
+
+    expect(
+      new TextEncoder().encode(
+        JSON.stringify({ members: [{ ...member, profile }] }),
+      ).length,
+    ).toBeLessThanOrEqual(maxBulkRequestBytes);
+    expect(() =>
+      parseMembersCsv(
+        `email,first_name,last_name,profile\na@b.com,A,B,${profile}`,
+      ),
+    ).toThrow("expands beyond the import size limit");
+  });
+
   it("accepts a large CSV whose request stays inside the HTTP limit", () => {
     const csv = `email,first_name,last_name,profile\na@b.com,A,B,${"x".repeat(maxCsvBytes - 100)}`;
     const rows = parseMembersCsv(csv);

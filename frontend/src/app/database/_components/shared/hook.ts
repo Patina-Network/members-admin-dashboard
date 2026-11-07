@@ -6,21 +6,35 @@ import {
   useSearchParams,
 } from "react-router-dom";
 
-import type { MemberFormValues } from "@/app/database/_components/shared/types";
 import type {
+  BulkImportPhase,
+  BulkRowStatus,
+  CsvMemberRow,
+  MemberFormValues,
+} from "@/app/database/_components/shared/types";
+import type {
+  BulkResult,
   Member,
   MemberDetails,
   MemberUpdate,
   NewMember,
 } from "@/lib/api/generated/types.gen";
 
+import {
+  optionalColumns,
+  parseMembersCsv,
+  requiredColumns,
+} from "@/app/database/_components/import/csv";
 import { isMemberRole } from "@/app/database/_components/shared/memberRoles";
 import {
   validateDiscordId,
   validateEmail,
   validateSocialUsername,
 } from "@/app/database/_components/shared/memberValidation";
-import { useMembersQuery } from "@/lib/api/queries/members";
+import {
+  useBulkImportMembersMutation,
+  useMembersQuery,
+} from "@/lib/api/queries/members";
 
 const initialValues: MemberFormValues = {
   email: "",
@@ -309,5 +323,147 @@ export function useMemberTable() {
     matchingCount: filteredMembers.length,
     hasSearch: searchPrefix.length > 0,
     showCreatedMember,
+  };
+}
+
+type Outcome = BulkResult["outcome"];
+
+const outcomeStyles: Record<
+  Outcome,
+  { label: string; tally: string; color: string }
+> = {
+  created: { label: "Added", tally: "added", color: "green" },
+  updated: { label: "Updated", tally: "updated", color: "blue" },
+  unchanged: { label: "Unchanged", tally: "unchanged", color: "gray" },
+  failed: { label: "Failed", tally: "failed", color: "red" },
+};
+
+const unreportedRowLabels: Record<BulkImportPhase, string> = {
+  ready: "Ready",
+  pending: "Importing…",
+  done: "Unconfirmed",
+  unconfirmed: "Unconfirmed",
+};
+
+/** CSV import: parses one file, submits it once, and reports each row's result. */
+export function useBulkImport(onPending: (pending: boolean) => void) {
+  const [rows, setRows] = useState<CsvMemberRow[]>([]);
+  const [fileName, setFileName] = useState("");
+  const [csvError, setCsvError] = useState("");
+  const [reading, setReading] = useState(false);
+  const [upsert, setUpsert] = useState(false);
+  const mutation = useBulkImportMembersMutation();
+  const [submitting, setSubmitting] = useState(false);
+
+  // Keeps the modal open while a file is parsing or an import is running.
+  useEffect(() => {
+    onPending(reading || mutation.isPending);
+  }, [onPending, reading, mutation.isPending]);
+
+  const upload = async ([file]: File[]) => {
+    if (!file) return;
+
+    setReading(true);
+    setCsvError("");
+    try {
+      setRows(parseMembersCsv(await file.text()));
+      setFileName(file.name);
+    } catch (cause) {
+      setCsvError(
+        cause instanceof Error ? cause.message : "Unable to read CSV.",
+      );
+    } finally {
+      setReading(false);
+    }
+  };
+
+  const rejectFile = () =>
+    setCsvError(
+      "Choose one .csv file of 1 MB or less. Split larger files into smaller imports.",
+    );
+
+  const submit = () => {
+    setSubmitting(true);
+    mutation.mutate({
+      members: rows.map((row) => row.member),
+      mode: upsert ? "upsert" : "create",
+    });
+  };
+
+  const reset = () => {
+    setSubmitting(false);
+    setRows([]);
+    setFileName("");
+    setCsvError("");
+    mutation.reset();
+  };
+
+  // `submitting` flips on the click's own render, so the Import button is
+  // disabled before a second click; `mutation.isPending` flips a tick later.
+  const phase: BulkImportPhase =
+    mutation.data ? "done"
+    : mutation.error ? "unconfirmed"
+    : submitting ? "pending"
+    : "ready";
+
+  const results = mutation.data?.results ?? [];
+  const resultsByRow = new Map(results.map((result) => [result.index, result]));
+
+  const rowStatus = (index: number): BulkRowStatus => {
+    const result = resultsByRow.get(index);
+    if (!result) return { label: unreportedRowLabels[phase], color: "dimmed" };
+
+    const { label, color } = outcomeStyles[result.outcome];
+    return { label: result.outcome === "failed" ? result.error : label, color };
+  };
+
+  const tallies = Object.entries(outcomeStyles)
+    .map(([outcome, { tally, color }]) => ({
+      label: tally,
+      color,
+      count: results.filter((result) => result.outcome === outcome).length,
+    }))
+    .filter(({ count }) => count > 0);
+
+  const status = {
+    ready: `Ready to import ${rows.length} members. Click "Import" to confirm.`,
+    pending: "Importing members… Please keep this window open.",
+    done: tallies.map(({ count, label }) => `${count} ${label}`).join(", "),
+    unconfirmed:
+      "Results are unconfirmed. Refresh the member table before retrying.",
+  }[phase];
+
+  const alert =
+    csvError ? { title: "Check your CSV", message: csvError }
+    : mutation.error ?
+      {
+        title: "Import could not be confirmed",
+        message: mutation.error.message,
+      }
+    : null;
+
+  const previewColumns = [
+    ...requiredColumns,
+    ...optionalColumns.filter((column) =>
+      rows.some(({ member }) => member[column] != null),
+    ),
+  ];
+
+  return {
+    rows,
+    fileName,
+    reading,
+    upsert,
+    setUpsert,
+    phase,
+    alert,
+    status,
+    tallies,
+    previewColumns,
+    rowStatus,
+    upload,
+    rejectFile,
+    submit,
+    reset,
   };
 }
