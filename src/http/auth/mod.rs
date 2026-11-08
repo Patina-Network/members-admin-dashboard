@@ -373,4 +373,49 @@ mod tests {
         );
         assert!(session::principal(&round_trip(&jar), &config).is_none());
     }
+
+    // TODO: Mock the api provider
+    /// A 1ns HTTP timeout makes every Azure request fail before any network I/O completes.
+    fn unreachable_azure() -> AuthApi {
+        let mut config = test_state().config.auth;
+        config.http_timeout = std::time::Duration::from_nanos(1);
+        AuthApi::new(Arc::new(AzureProvider::new(config).unwrap()))
+    }
+
+    #[tokio::test]
+    async fn login_redirects_with_unavailable_when_azure_discovery_fails() {
+        let (jar, response) = login(State(unreachable_azure()), CookieJar::new())
+            .await
+            .ok()
+            .expect("login should redirect, not error");
+
+        assert_eq!(
+            response.into_response().headers()["location"],
+            "/login?error=unavailable"
+        );
+        assert!(jar.iter().next().is_none());
+    }
+
+    #[tokio::test]
+    async fn callback_redirects_with_login_failed_when_token_exchange_fails() {
+        let state = unreachable_azure();
+        let config = state.provider.config.clone();
+
+        let (jar, response) = callback(
+            State(state),
+            login_jar(&config),
+            Ok(Query(query(Some("code"), Some("expected"), None))),
+        )
+        .await
+        .ok()
+        .expect("callback should redirect, not error");
+
+        assert_eq!(
+            response.into_response().headers()["location"],
+            "/login?error=login_failed"
+        );
+        let jar = round_trip(&jar);
+        assert!(session::principal(&jar, &config).is_none());
+        assert!(session::take_login(jar, &config).1.is_none());
+    }
 }
