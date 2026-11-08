@@ -15,6 +15,7 @@ use time::OffsetDateTime;
 use crate::{
     auth::{provider::AzureProvider, session},
     config::AuthConfig,
+    metrics::{self, LoginOutcome},
 };
 use domain::{
     AuthError, CallbackQuery, FlowResponse, LogoutBody, LogoutResponse, SessionBody,
@@ -55,6 +56,7 @@ pub async fn login(
         Ok(attempt) => attempt,
         Err(_) => {
             tracing::warn!("Azure authorization discovery failed");
+            metrics::record_login(LoginOutcome::Unavailable);
             return Ok((jar, FlowResponse::redirect("/login?error=unavailable")));
         }
     };
@@ -68,7 +70,10 @@ pub async fn callback(
     jar: CookieJar,
     query: Result<Query<CallbackQuery>, QueryRejection>,
 ) -> Result<(CookieJar, FlowResponse), AuthError> {
-    let Query(query) = query.map_err(|_| AuthError::invalid())?;
+    let Query(query) = query.map_err(|_| {
+        metrics::record_login(LoginOutcome::InvalidCallback);
+        AuthError::invalid()
+    })?;
     let config = &provider.config;
 
     let (jar, attempt) = session::take_login(jar, config);
@@ -79,14 +84,17 @@ pub async fn callback(
             .as_deref()
             .is_some_and(|s| a.valid(s, OffsetDateTime::now_utc().unix_timestamp()))
     }) else {
+        metrics::record_login(LoginOutcome::InvalidCallback);
         return Ok((jar, FlowResponse::redirect("/login?error=invalid_callback")));
     };
 
     if query.error.is_some() {
+        metrics::record_login(LoginOutcome::Cancelled);
         return Ok((jar, FlowResponse::redirect("/login?error=cancelled")));
     }
 
     let Some(code) = query.code.filter(|s| !s.is_empty()) else {
+        metrics::record_login(LoginOutcome::InvalidCallback);
         return Ok((jar, FlowResponse::redirect("/login?error=invalid_callback")));
     };
 
@@ -94,6 +102,7 @@ pub async fn callback(
         Ok(principal) => principal,
         Err(_) => {
             tracing::warn!("Azure token exchange or validation failed");
+            metrics::record_login(LoginOutcome::Failed);
             return Ok((jar, FlowResponse::redirect("/login?error=login_failed")));
         }
     };
@@ -146,13 +155,16 @@ fn complete_login(
     principal: session::Principal,
 ) -> Result<(CookieJar, FlowResponse), AuthError> {
     if !principal.is_admin(config) {
+        metrics::record_login(LoginOutcome::Forbidden);
         return Ok((
             session::clear(jar, config),
             FlowResponse::redirect("/login?error=forbidden"),
         ));
     }
 
-    let jar = session::establish(jar, config, &principal)?;
+    let jar = session::establish(jar, config, &principal)
+        .inspect_err(|_| metrics::record_login(LoginOutcome::Failed))?;
+    metrics::record_login(LoginOutcome::Success);
     Ok((jar, FlowResponse::redirect("/database")))
 }
 

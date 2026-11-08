@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::Context;
+use members_admin_dashboard::metrics;
 use members_admin_dashboard::{
     auth::provider::AzureProvider,
     config::Config,
@@ -10,7 +10,6 @@ use members_grpc_service::members::{
     admin::members_admin_service_client::MembersAdminServiceClient,
     members_service_client::MembersServiceClient,
 };
-use metrics_exporter_prometheus::PrometheusBuilder;
 use tracing_subscriber::EnvFilter;
 
 fn init_tracing(config: &Config) {
@@ -37,9 +36,7 @@ async fn main() -> anyhow::Result<()> {
     init_tracing(&config);
     config.log();
 
-    let prometheus_handle = PrometheusBuilder::new()
-        .install_recorder()
-        .context("failed to install Prometheus recorder")?;
+    let prometheus_handle = metrics::install_recorder()?;
     let sys_collector = metrics_process::Collector::default();
     sys_collector.describe();
 

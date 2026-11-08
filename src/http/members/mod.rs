@@ -15,7 +15,10 @@ use members_grpc_service::members::{
     admin::{BulkMemberOperationsRequest, CreateMemberRequest, SensitiveMember},
 };
 
-use crate::grpc::{self, MembersAdminGrpcClient, MembersGrpcClient, error::UpstreamError};
+use crate::{
+    grpc::{self, MembersAdminGrpcClient, MembersGrpcClient, error::UpstreamError},
+    metrics::GrpcMethod,
+};
 use domain::{
     ArchiveResponse, BulkMembers, BulkOutcome, BulkResult, BulkResults, CreateResponse,
     DetailsResponse, ListResponse, Member, MemberDetails, MemberList, MemberUpdate, NewMember,
@@ -91,9 +94,12 @@ pub async fn update<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
     }
 
     let mut client = client;
-    let member = grpc::call(timeout, request, |request| async {
-        client.update_member(request).await
-    })
+    let member = grpc::call(
+        GrpcMethod::UpdateMember,
+        timeout,
+        request,
+        |request| async { client.update_member(request).await },
+    )
     .await?
     .member
     .ok_or(UpstreamError::Failed)?;
@@ -120,6 +126,7 @@ pub async fn archive<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
     }
 
     grpc::call(
+        GrpcMethod::ArchiveMember,
         timeout,
         members::admin::ArchiveMemberRequest { member_id },
         |request| async { client.archive_member(request).await },
@@ -169,9 +176,12 @@ pub async fn create<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
 ) -> Result<CreateResponse, UpstreamError> {
     let Json(body) = body.map_err(|_| UpstreamError::InvalidArgument)?;
 
-    let member = grpc::call(timeout, body.try_into()?, |request| async {
-        client.create_member(request).await
-    })
+    let member = grpc::call(
+        GrpcMethod::CreateMember,
+        timeout,
+        body.try_into()?,
+        |request| async { client.create_member(request).await },
+    )
     .await?
     .member
     .ok_or(UpstreamError::Failed)?;
@@ -220,6 +230,7 @@ pub async fn bulk_import<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
 
     if !operations.is_empty() {
         let response = grpc::call(
+            GrpcMethod::BulkMemberOperations,
             timeout,
             BulkMemberOperationsRequest { operations },
             |request| async { client.bulk_member_operations(request).await },
@@ -267,6 +278,7 @@ async fn sensitive_member<MAGC: MembersAdminGrpcClient>(
     member_id: i32,
 ) -> Result<SensitiveMember, UpstreamError> {
     grpc::call(
+        GrpcMethod::GetSensitiveMember,
         timeout,
         members::GetMemberRequest {
             identifier: Some(members::get_member_request::Identifier::MemberId(member_id)),
@@ -290,6 +302,7 @@ async fn collect_members<MGC: MembersGrpcClient>(
         loop {
             let mut client = client.clone();
             let response = grpc::call(
+                GrpcMethod::ListMembers,
                 timeout,
                 members::ListMembersRequest {
                     include_archived: false,
