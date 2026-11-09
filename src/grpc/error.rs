@@ -7,7 +7,7 @@ use tonic::{Code, Status};
 
 use crate::http::ErrorBody;
 
-#[derive(Debug)]
+#[derive(Debug, strum::AsRefStr)]
 pub enum UpstreamError {
     InvalidArgument,
     NotFound,

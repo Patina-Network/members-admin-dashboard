@@ -5,15 +5,20 @@ use members_grpc_service::members::{
     admin::{self, members_admin_service_client::MembersAdminServiceClient},
     members_service_client::MembersServiceClient,
 };
-use std::{future::Future, time::Duration};
+use std::{
+    future::Future,
+    time::{Duration, Instant},
+};
 use tonic::transport::Channel;
 
 use tonic::{Request, Response, Status};
 
+use crate::metrics::{self, GrpcMethod};
 use error::UpstreamError;
 
 /// use this function to make any outbound grpc requests.
 pub async fn call<M, T, F>(
+    method: GrpcMethod,
     timeout: Duration,
     message: M,
     rpc: impl FnOnce(Request<M>) -> F,
@@ -24,11 +29,14 @@ where
     let mut request = Request::new(message);
     request.set_timeout(timeout);
 
-    tokio::time::timeout(timeout, rpc(request))
-        .await
-        .map_err(|_| UpstreamError::Timeout)?
-        .map(Response::into_inner)
-        .map_err(Into::into)
+    let started = Instant::now();
+    let result = match tokio::time::timeout(timeout, rpc(request)).await {
+        Ok(response) => response.map(Response::into_inner).map_err(Into::into),
+        Err(_) => Err(UpstreamError::Timeout),
+    };
+
+    metrics::record_grpc_request(method, result.as_ref().map(|_| ()), started.elapsed());
+    result
 }
 
 pub trait MembersGrpcClient: Clone + Send + Sync + 'static {

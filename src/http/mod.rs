@@ -9,12 +9,13 @@ mod spa;
 pub mod suggestions;
 mod version;
 
-use std::any::Any;
+use std::{any::Any, time::Instant};
 
 use axum::{
     Json, Router,
+    extract::{MatchedPath, Request},
     http::StatusCode,
-    middleware,
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -26,6 +27,7 @@ use utoipa_swagger_ui::SwaggerUi;
 use crate::{
     grpc::{MembersAdminGrpcClient, MembersGrpcClient},
     http::{auth::AuthApi, members::MembersApi, state::AppState, suggestions::SuggestionsApi},
+    metrics::record_http_request,
 };
 
 /// JSON body of every `/api` error response; the frontend reads `error`.
@@ -66,7 +68,23 @@ pub fn app<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
             auth::middleware::protect,
         ))
         .layer(catch_panic::CatchPanicLayer::custom(panic_response))
+        .layer(middleware::from_fn(track_requests))
         .with_state(state)
+}
+
+async fn track_requests(request: Request, next: Next) -> Response {
+    let method = request.method().clone();
+    let route = request.extensions().get::<MatchedPath>().cloned();
+    let started = Instant::now();
+
+    let response = next.run(request).await;
+    record_http_request(
+        &method,
+        route.as_ref(),
+        response.status(),
+        started.elapsed(),
+    );
+    response
 }
 
 fn panic_response(panic: Box<dyn Any + Send + 'static>) -> Response {

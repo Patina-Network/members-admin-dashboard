@@ -9,7 +9,10 @@ use axum::{
 use members_grpc_service::members::{ListCareersRequest, ListIndustriesRequest};
 use serde::{Deserialize, Serialize};
 
-use crate::grpc::{self, MembersGrpcClient, error::UpstreamError};
+use crate::{
+    grpc::{self, MembersGrpcClient, error::UpstreamError},
+    metrics::GrpcMethod,
+};
 
 #[derive(Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -94,6 +97,7 @@ pub async fn career_suggestions<MGC: MembersGrpcClient>(
         query.map_err(|_| UpstreamError::InvalidArgument)?;
 
     let response = grpc::call(
+        GrpcMethod::ListCareers,
         timeout,
         ListCareersRequest {
             query,
@@ -123,6 +127,7 @@ pub async fn industry_suggestions<MGC: MembersGrpcClient>(
         query.map_err(|_| UpstreamError::InvalidArgument)?;
 
     let response = grpc::call(
+        GrpcMethod::ListIndustries,
         timeout,
         ListIndustriesRequest {
             query,
