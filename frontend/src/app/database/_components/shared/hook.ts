@@ -178,17 +178,17 @@ export const membersPerPage = 10;
 
 /** Keeps member search, role filters, and pagination in the URL without resetting a saved page during loading. */
 export function useMemberTable() {
-  const members = useMembersQuery();
   const [createdMemberId, setCreatedMemberId] = useState<number | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const location = useLocation();
   const navigationType = useNavigationType();
+  const search = searchParams.get("search") ?? "";
+  const members = useMembersQuery(search);
 
   useEffect(() => {
     if (navigationType === "POP") setCreatedMemberId(null);
   }, [location.key, navigationType]);
 
-  const search = searchParams.get("search") ?? "";
   const setSearch = (value: string) => {
     setCreatedMemberId(null);
     setSearchParams(
@@ -238,19 +238,13 @@ export function useMemberTable() {
   };
 
   const allMembers = members.data?.members ?? [];
-  const searchPrefix = search.trim().toLocaleLowerCase();
   const selectedRoles = new Set(roles);
 
-  const filteredMembers = allMembers.filter((member) => {
-    const nameMatches = member.first_name
-      .toLocaleLowerCase()
-      .startsWith(searchPrefix);
-    const roleMatches =
+  const filteredMembers = allMembers.filter(
+    (member) =>
       selectedRoles.size === 0 ||
-      (member.role != null && selectedRoles.has(member.role));
-
-    return nameMatches && roleMatches;
-  });
+      (member.role != null && selectedRoles.has(member.role)),
+  );
 
   const pageCount = Math.max(
     1,
@@ -321,7 +315,7 @@ export function useMemberTable() {
     pageCount,
     visibleMembers,
     matchingCount: filteredMembers.length,
-    hasSearch: searchPrefix.length > 0,
+    hasSearch: search.trim().length > 0,
     showCreatedMember,
   };
 }

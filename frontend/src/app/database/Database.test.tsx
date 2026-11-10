@@ -16,6 +16,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { MemberDetails } from "@/lib/api/generated/types.gen";
 
 import DatabasePage from "@/app/database/Database.page";
+import { listQueryKey } from "@/lib/api/generated/@tanstack/react-query.gen";
 import {
   archive,
   bulkImport,
@@ -1096,25 +1097,37 @@ describe("member list states", () => {
 
     renderPage(false, "/database?page=3");
     await screen.findByText("person21@example.com");
+    expect(list).toHaveBeenCalledWith({ signal: expect.any(AbortSignal) });
 
     const user = userEvent.setup();
-    await user.type(screen.getByLabelText("Search by first name"), "ANG");
+    await user.type(screen.getByLabelText("Search members"), "ANG");
 
-    expect(screen.getByText("person1@example.com")).toBeInTheDocument();
-    expect(screen.queryByText("person21@example.com")).not.toBeInTheDocument();
-    expect(screen.getByText("1 matching member")).toBeInTheDocument();
-    expect(screen.getByText("21 members")).toBeInTheDocument();
-    expect(screen.getByLabelText("Current URL")).toHaveTextContent("page=1");
+    await waitFor(() => {
+      expect(list).toHaveBeenCalledWith({
+        signal: expect.any(AbortSignal),
+      });
+      expect(screen.getByText("person1@example.com")).toBeInTheDocument();
+      expect(
+        screen.queryByText("person21@example.com"),
+      ).not.toBeInTheDocument();
+      expect(screen.getByText("1 matching member")).toBeInTheDocument();
+      expect(screen.getByText("21 members")).toBeInTheDocument();
+      expect(list).toHaveBeenCalledTimes(1);
+      expect(screen.getByLabelText("Current URL")).toHaveTextContent("page=1");
+    });
 
-    await user.clear(screen.getByLabelText("Search by first name"));
-    await user.type(screen.getByLabelText("Search by first name"), "Nobody");
+    await user.clear(screen.getByLabelText("Search members"));
+    await user.type(screen.getByLabelText("Search members"), "Nobody");
     expect(
-      screen.getByText("No members match your search"),
+      await screen.findByText("No members match your search"),
     ).toBeInTheDocument();
+    expect(list).toHaveBeenCalledWith({
+      signal: expect.any(AbortSignal),
+    });
 
     await user.click(screen.getByRole("button", { name: "Clear" }));
-    expect(screen.getByLabelText("Search by first name")).toHaveValue("");
-    expect(screen.getByText("person1@example.com")).toBeInTheDocument();
+    expect(screen.getByLabelText("Search members")).toHaveValue("");
+    expect(await screen.findByText("person1@example.com")).toBeInTheDocument();
     expect(screen.getByLabelText("Current URL")).not.toHaveTextContent(
       "search=",
     );
@@ -1132,10 +1145,13 @@ describe("member list states", () => {
 
     renderPage(false, "/database?search=NAN&page=2");
 
-    expect(screen.getByLabelText("Search by first name")).toHaveValue("NAN");
+    expect(screen.getByLabelText("Search members")).toHaveValue("NAN");
     expect(await screen.findByText("person11@example.com")).toBeInTheDocument();
     expect(screen.queryByText("person1@example.com")).not.toBeInTheDocument();
     expect(screen.getByText("12 matching members")).toBeInTheDocument();
+    expect(list).toHaveBeenCalledWith({
+      signal: expect.any(AbortSignal),
+    });
   });
 
   it("pages the table and keeps the header on the full count", async () => {
@@ -1161,7 +1177,7 @@ describe("member list states", () => {
     expect(screen.getByText("40 members")).toBeInTheDocument();
   });
 
-  it("shows the new member before a slow list finishes", async () => {
+  it("waits for the complete list instead of inventing a total after creation", async () => {
     const pending = deferred<MemberListResult>();
     const refresh = deferred<MemberListResult>();
     vi.mocked(list)
@@ -1175,15 +1191,18 @@ describe("member list states", () => {
 
     submitForm();
 
-    expect(await screen.findByText("1 member")).toBeInTheDocument();
-    expect(screen.getByText(member.email)).toBeInTheDocument();
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText("1 member")).not.toBeInTheDocument();
+    expect(screen.getByRole("table").querySelector("tbody")).toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
 
     await act(async () => pending.resolve(memberList([])));
-    expect(screen.getByText("1 member")).toBeInTheDocument();
-    expect(screen.getByText(member.email)).toBeInTheDocument();
+    expect(screen.queryByText("1 member")).not.toBeInTheDocument();
 
     await act(async () => refresh.resolve(memberList([member])));
-    expect(screen.getByText(member.email)).toBeInTheDocument();
+    expect(await screen.findByText(member.email)).toBeInTheDocument();
   });
 
   it("refetches after creation while the initial request is pending", async () => {
@@ -1303,28 +1322,27 @@ describe("archive member", () => {
   });
 });
 
-it("matches only the beginning of first names", async () => {
+it("filters the shared list using the search restored from the URL", async () => {
+  const frank = {
+    ...member,
+    member_id: 2,
+    first_name: "Frank",
+    last_name: "Lee",
+    email: "frank@example.com",
+  };
   vi.mocked(list).mockResolvedValue(
     memberList([
       {
         ...member,
         member_id: 1,
         first_name: "Sofia",
-        last_name: "Nguyen",
         email: "sofia@example.com",
       },
-      {
-        ...member,
-        member_id: 2,
-        first_name: "Frank",
-        last_name: "Lee",
-        email: "frank@example.com",
-      },
+      frank,
       {
         ...member,
         member_id: 3,
         first_name: "Anna",
-        last_name: "Foster",
         email: "anna@example.com",
       },
     ]),
@@ -1333,9 +1351,13 @@ it("matches only the beginning of first names", async () => {
   renderPage(false, "/database?search=f");
 
   expect(await screen.findByText("frank@example.com")).toBeInTheDocument();
+  expect(list).toHaveBeenCalledWith({
+    signal: expect.any(AbortSignal),
+  });
   expect(screen.queryByText("sofia@example.com")).not.toBeInTheDocument();
   expect(screen.queryByText("anna@example.com")).not.toBeInTheDocument();
   expect(screen.getByText("1 matching member")).toBeInTheDocument();
+  expect(screen.getByText("3 members")).toBeInTheDocument();
 });
 
 it("filters by role from the button under Add and keeps that filter in the URL", async () => {
@@ -1700,7 +1722,10 @@ it("preserves confirmed bulk imports and counts when the list refresh fails", as
     response,
   } as never);
 
-  renderPage();
+  const queryClient = renderPage();
+  const filteredKey = listQueryKey({ query: { query: "Nobody" } });
+  const filteredList = { members: [], total: 1 };
+  queryClient.setQueryData(filteredKey, filteredList);
   const user = userEvent.setup();
   await screen.findByText(member.email);
 
@@ -1731,6 +1756,8 @@ it("preserves confirmed bulk imports and counts when the list refresh fails", as
   expect(screen.getAllByText(member.email)).toHaveLength(1);
   expect(screen.getByText("2 members")).toBeInTheDocument();
   expect(screen.queryByText("failed@example.com")).not.toBeInTheDocument();
+  expect(queryClient.getQueryData(filteredKey)).toEqual(filteredList);
+  expect(queryClient.getQueryState(filteredKey)?.isInvalidated).toBe(true);
 });
 
 it.each(["invalid date", "oversized file"])(

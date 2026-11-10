@@ -26,11 +26,31 @@ const membersKey = listQueryKey();
 const uncertainWriteMessage =
   "Could not confirm whether the member was added. Reload the page before trying again.";
 
-export const useMembersQuery = () => {
-  return useQuery<MemberList>({
+export function matchesMemberSearch(member: Member, query: string) {
+  const prefix = query.trim().toLowerCase();
+  return [
+    member.first_name,
+    member.last_name,
+    member.email,
+    member.discord_id,
+    member.discord_username,
+    member.instagram_username,
+    member.linkedin_username,
+    String(member.member_id),
+  ].some((value) => value?.toLowerCase().startsWith(prefix));
+}
+
+export const useMembersQuery = (query: string) => {
+  return useQuery({
     retry: false,
     queryKey: membersKey,
     queryFn: ({ signal }) => fetchMembers(signal),
+    select: (data: MemberList): MemberList => ({
+      ...data,
+      members: data.members.filter((member) =>
+        matchesMemberSearch(member, query),
+      ),
+    }),
   });
 };
 
@@ -74,8 +94,8 @@ export const useAddMemberMutation = () => {
     onSuccess: async (member) => {
       await queryClient.cancelQueries({ queryKey: membersKey });
 
-      queryClient.setQueryData<MemberList>(membersKey, (current) => {
-        if (!current) return { members: [member], total: 1 };
+      const updateList = (current: MemberList | undefined) => {
+        if (!current) return current;
 
         if (current.members.some((row) => row.member_id === member.member_id)) {
           return {
@@ -91,7 +111,9 @@ export const useAddMemberMutation = () => {
           members: [member, ...current.members],
           total: current.total + 1,
         };
-      });
+      };
+
+      queryClient.setQueryData<MemberList>(membersKey, updateList);
 
       void queryClient.invalidateQueries({ queryKey: membersKey });
     },
@@ -191,15 +213,17 @@ export const useUpdateMemberMutation = () => {
     onSuccess: async (member: Member) => {
       await queryClient.cancelQueries({ queryKey: membersKey });
 
-      queryClient.setQueryData<MemberList>(membersKey, (current) =>
-        current ?
-          {
-            ...current,
-            members: current.members.map((row) =>
-              row.member_id === member.member_id ? member : row,
-            ),
-          }
-        : current,
+      queryClient.setQueriesData<MemberList>(
+        { queryKey: membersKey },
+        (current) =>
+          current ?
+            {
+              ...current,
+              members: current.members.map((row) =>
+                row.member_id === member.member_id ? member : row,
+              ),
+            }
+          : current,
       );
 
       void queryClient.invalidateQueries({ queryKey: membersKey });
@@ -240,14 +264,26 @@ export const useArchiveMemberMutation = () => {
     onSuccess: async (memberId) => {
       await queryClient.cancelQueries({ queryKey: membersKey });
 
-      queryClient.setQueryData<MemberList>(membersKey, (current) => {
-        if (!current) return current;
+      queryClient.setQueriesData<MemberList>(
+        { queryKey: membersKey },
+        (current) => {
+          if (!current) return current;
 
-        const members = current.members.filter(
-          (row) => row.member_id !== memberId,
-        );
-        return { members, total: members.length };
-      });
+          return {
+            ...current,
+            members: current.members.filter(
+              (row) => row.member_id !== memberId,
+            ),
+            total: Math.max(
+              0,
+              current.total -
+                Number(
+                  current.members.some((row) => row.member_id === memberId),
+                ),
+            ),
+          };
+        },
+      );
 
       void queryClient.invalidateQueries({ queryKey: membersKey });
     },
@@ -296,26 +332,30 @@ export const useBulkImportMembersMutation = () => {
       }
 
       if (imported.size) {
-        queryClient.setQueryData<MemberList>(membersKey, (current) => {
-          const existing = current?.members ?? [];
-          const existingIds = new Set(
-            existing.map((member) => member.member_id),
-          );
-          const added = [...imported.values()].filter(
-            (member) => !existingIds.has(member.member_id),
-          );
+        queryClient.setQueriesData<MemberList>(
+          { queryKey: membersKey, exact: true },
+          (current) => {
+            if (!current) return current;
+            const existing = current.members;
+            const existingIds = new Set(
+              existing.map((member) => member.member_id),
+            );
+            const added = [...imported.values()].filter(
+              (member) => !existingIds.has(member.member_id),
+            );
 
-          return {
-            ...current,
-            members: [
-              ...added,
-              ...existing.map(
-                (member) => imported.get(member.member_id) ?? member,
-              ),
-            ],
-            total: (current?.total ?? 0) + added.length,
-          };
-        });
+            return {
+              ...current,
+              members: [
+                ...added,
+                ...existing.map(
+                  (member) => imported.get(member.member_id) ?? member,
+                ),
+              ],
+              total: current.total + added.length,
+            };
+          },
+        );
       }
 
       void queryClient.invalidateQueries({ queryKey: membersKey });

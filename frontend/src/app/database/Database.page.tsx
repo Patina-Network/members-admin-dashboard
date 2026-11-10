@@ -77,8 +77,8 @@ export default function DatabasePage() {
         </Stack>
       </Group>
       <TextInput
-        label="Search by first name"
-        placeholder="First name"
+        label="Search members"
+        placeholder="Name, email, Discord, Instagram, LinkedIn, or ID"
         type="search"
         size="sm"
         maw={280}

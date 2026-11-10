@@ -7,13 +7,17 @@ use std::{
 
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, State, rejection::JsonRejection},
+    extract::{
+        DefaultBodyLimit, Path, Query, State,
+        rejection::{JsonRejection, QueryRejection},
+    },
     routing::{get, post},
 };
 use members_grpc_service::members::{
     self,
     admin::{BulkMemberOperationsRequest, CreateMemberRequest, SensitiveMember},
 };
+use serde::Deserialize;
 
 use crate::{
     grpc::{self, MembersAdminGrpcClient, MembersGrpcClient, error::UpstreamError},
@@ -259,15 +263,31 @@ pub async fn bulk_import<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
     Ok(Json(BulkResults { results }))
 }
 
-#[utoipa::path(get, path = "/api/members", responses(ListResponse, UpstreamError))]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct MemberListQuery {
+    /// Case-insensitive prefix on name, email, Discord id, Discord username, Instagram, LinkedIn, and member id.
+    #[serde(default)]
+    query: String,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/members",
+    params(MemberListQuery),
+    responses(ListResponse, UpstreamError)
+)]
 pub async fn list<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
     State(MembersApi {
         members_grpc_client: client,
         timeout,
         ..
     }): State<MembersApi<MGC, MAGC>>,
+    query: Result<Query<MemberListQuery>, QueryRejection>,
 ) -> Result<ListResponse, UpstreamError> {
-    collect_members(client, timeout)
+    let Query(MemberListQuery { query }) = query.map_err(|_| UpstreamError::InvalidArgument)?;
+
+    collect_members(client, timeout, &query)
         .await
         .map(ListResponse::Success)
 }
@@ -293,6 +313,7 @@ async fn sensitive_member<MAGC: MembersAdminGrpcClient>(
 async fn collect_members<MGC: MembersGrpcClient>(
     client: MGC,
     timeout: Duration,
+    query: &str,
 ) -> Result<MemberList, UpstreamError> {
     tokio::time::timeout(timeout, async {
         let mut members = BTreeMap::new();
@@ -328,13 +349,38 @@ async fn collect_members<MGC: MembersGrpcClient>(
         }
 
         let members: Vec<_> = members.into_values().collect();
-        Ok(MemberList {
-            total: members.len(),
-            members,
-        })
+        let total = members.len();
+        let query = query.trim().to_lowercase();
+        let members = if query.is_empty() {
+            members
+        } else {
+            members
+                .into_iter()
+                .filter(|member| matches_query(member, &query))
+                .collect()
+        };
+
+        Ok(MemberList { total, members })
     })
     .await
     .map_err(|_| UpstreamError::Timeout)?
+}
+
+fn matches_query(member: &Member, query: &str) -> bool {
+    let member_id = member.member_id.to_string();
+    [
+        Some(member.first_name.as_str()),
+        Some(member.last_name.as_str()),
+        Some(member.email.as_str()),
+        member.discord_id.as_deref(),
+        member.discord_username.as_deref(),
+        member.instagram_username.as_deref(),
+        member.linkedin_username.as_deref(),
+        Some(member_id.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|value| value.to_lowercase().starts_with(query))
 }
 
 #[cfg(test)]
@@ -344,8 +390,11 @@ mod tests {
     use axum::{
         Json,
         body::Body,
-        extract::{FromRequest, Path, State, rejection::JsonRejection},
-        http::{Request, StatusCode},
+        extract::{
+            FromRequest, Path, Query, State,
+            rejection::{JsonRejection, QueryRejection},
+        },
+        http::{Request, StatusCode, Uri},
         response::{IntoResponse, Response},
     };
     use http_body_util::BodyExt;
@@ -437,14 +486,83 @@ mod tests {
         (response, admin)
     }
 
-    async fn list_reply(page: Outcome<members::ListMembersResponse>) -> Response {
-        super::list(api_with_timeout(
-            FakeMembers::pages([page]),
-            FakeAdmin::default(),
-            Duration::from_secs(1),
-        ))
+    async fn list_reply(
+        page: Outcome<members::ListMembersResponse>,
+        query: Result<Query<super::MemberListQuery>, QueryRejection>,
+    ) -> Response {
+        super::list(
+            api_with_timeout(
+                FakeMembers::pages([page]),
+                FakeAdmin::default(),
+                Duration::from_secs(1),
+            ),
+            query,
+        )
         .await
         .into_response()
+    }
+
+    fn member_list_query(query: &str) -> Result<Query<super::MemberListQuery>, QueryRejection> {
+        let mut encoded = String::new();
+        for byte in query.bytes() {
+            match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' => {
+                    encoded.push(char::from(byte));
+                }
+                _ => encoded.push_str(&format!("%{byte:02X}")),
+            }
+        }
+        let uri = format!("/api/members?query={encoded}");
+        Query::try_from_uri(&uri.parse::<Uri>().unwrap())
+    }
+
+    fn search_page() -> Outcome<members::ListMembersResponse> {
+        Outcome::Reply(members::ListMembersResponse {
+            // Career and industry must not participate in search.
+            members: vec![
+                members::Member {
+                    member_id: 10,
+                    email: "angela@example.com".into(),
+                    first_name: "Angela".into(),
+                    last_name: "Yu".into(),
+                    discord_id: Some("111".into()),
+                    discord_username: Some("angela".into()),
+                    linkedin_username: Some("angela-in".into()),
+                    instagram_username: Some("angela.ig".into()),
+                    career: Some("Foster".into()),
+                    industry: Some("Frank".into()),
+                    ..Default::default()
+                },
+                members::Member {
+                    member_id: 42,
+                    email: "nancy@example.com".into(),
+                    first_name: "Nancy".into(),
+                    last_name: "Huang".into(),
+                    career: Some("Angela".into()),
+                    industry: Some("gel".into()),
+                    ..Default::default()
+                },
+                members::Member {
+                    member_id: 7,
+                    email: "frank@example.com".into(),
+                    first_name: "Frank".into(),
+                    last_name: "Lee".into(),
+                    career: Some("oster".into()),
+                    industry: Some("example.com".into()),
+                    ..Default::default()
+                },
+                members::Member {
+                    member_id: 100,
+                    email: "anna@example.com".into(),
+                    first_name: "Anna".into(),
+                    last_name: "Foster".into(),
+                    career: Some("111".into()),
+                    industry: Some("Yu".into()),
+                    ..Default::default()
+                },
+            ],
+            next_page_token: String::new(),
+        })
     }
 
     async fn details_reply(admin: FakeAdmin, member_id: i32) -> Response {
@@ -598,7 +716,7 @@ mod tests {
                 create_reply(request_body(VALID_MEMBER).await, Outcome::Fail(code))
                     .await
                     .0,
-                list_reply(Outcome::Fail(code)).await,
+                list_reply(Outcome::Fail(code), member_list_query("")).await,
             ];
 
             for response in responses {
@@ -613,7 +731,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_returns_members_and_total_as_json() {
-        let response = list_reply(page(&[42], "")).await;
+        let response = list_reply(page(&[42], ""), member_list_query("")).await;
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = json_body(response).await;
@@ -1377,7 +1495,7 @@ mod tests {
     async fn pagination_keeps_unique_members_and_passes_tokens_unchanged() {
         let client = FakeMembers::pages([page(&[1, 2], "0:2"), page(&[2, 3], "")]);
 
-        let list = collect_members(client.clone(), Duration::from_secs(1))
+        let list = collect_members(client.clone(), Duration::from_secs(1), "")
             .await
             .unwrap();
 
@@ -1404,7 +1522,7 @@ mod tests {
     async fn pagination_rejects_repeated_tokens_and_discards_partial_results() {
         let client = FakeMembers::pages([page(&[1], "0:2"), page(&[2], "0:2")]);
 
-        let result = collect_members(client, Duration::from_secs(1)).await;
+        let result = collect_members(client, Duration::from_secs(1), "").await;
 
         assert!(matches!(result, Err(UpstreamError::Failed)));
     }
@@ -1413,7 +1531,7 @@ mod tests {
     async fn pagination_has_a_deadline_even_if_upstream_never_finishes() {
         let client = FakeMembers::pages([Outcome::Hang]);
 
-        let result = collect_members(client, Duration::from_millis(1)).await;
+        let result = collect_members(client, Duration::from_millis(1), "").await;
 
         assert!(matches!(result, Err(UpstreamError::Timeout)));
     }
@@ -1422,9 +1540,64 @@ mod tests {
     async fn pagination_propagates_upstream_failure_after_a_successful_page() {
         let client = FakeMembers::pages([page(&[1], "0:1"), Outcome::Fail(Code::Unavailable)]);
 
-        let result = collect_members(client.clone(), Duration::from_secs(1)).await;
+        let result = collect_members(client.clone(), Duration::from_secs(1), "").await;
 
         assert_eq!(sent(&client.list_requests).len(), 2);
         assert!(matches!(result, Err(UpstreamError::Unavailable)));
+    }
+
+    #[tokio::test]
+    async fn search_filters_by_prefix_and_keeps_the_unfiltered_total() {
+        async fn search(
+            query: Result<Query<super::MemberListQuery>, QueryRejection>,
+        ) -> (u64, Vec<i64>) {
+            let response = super::list(
+                api_with_timeout(
+                    FakeMembers::pages([search_page()]),
+                    FakeAdmin::default(),
+                    Duration::from_secs(1),
+                ),
+                query,
+            )
+            .await
+            .into_response();
+
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = json_body(response).await;
+            let ids = body["members"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|member| member["member_id"].as_i64().unwrap())
+                .collect();
+            (body["total"].as_u64().unwrap(), ids)
+        }
+
+        let missing = Query::try_from_uri(&"/api/members".parse::<Uri>().unwrap());
+        for query in [missing, member_list_query(""), member_list_query("   ")] {
+            assert_eq!(search(query).await, (4, vec![7, 10, 42, 100]));
+        }
+
+        for query in ["ANG", "ang", "yu", " yu "] {
+            assert_eq!(search(member_list_query(query)).await, (4, vec![10]));
+        }
+
+        assert_eq!(search(member_list_query("fos")).await, (4, vec![100]));
+        assert_eq!(search(member_list_query("fra")).await, (4, vec![7]));
+        assert_eq!(search(member_list_query("111")).await, (4, vec![10]));
+        assert_eq!(search(member_list_query("angela-in")).await, (4, vec![10]));
+        assert_eq!(search(member_list_query("angela.ig")).await, (4, vec![10]));
+        assert_eq!(search(member_list_query("nancy@")).await, (4, vec![42]));
+        assert_eq!(search(member_list_query("anna@")).await, (4, vec![100]));
+        assert_eq!(
+            search(member_list_query("example.com")).await,
+            (4, Vec::new())
+        );
+        assert_eq!(search(member_list_query("100")).await, (4, vec![100]));
+        assert_eq!(search(member_list_query("10")).await, (4, vec![10, 100]));
+        assert_eq!(search(member_list_query("1")).await, (4, vec![10, 100]));
+        assert_eq!(search(member_list_query("42")).await, (4, vec![42]));
+        assert_eq!(search(member_list_query("gel")).await, (4, Vec::new()));
+        assert_eq!(search(member_list_query("oster")).await, (4, Vec::new()));
     }
 }
