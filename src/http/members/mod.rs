@@ -520,7 +520,8 @@ mod tests {
             r#"{
         "email":"person@example.com", "first_name":"First", "last_name":"Last",
         "linkedin_username":" person-linkedin ", "instagram_username":" person.instagram ",
-        "career":" Engineer ", "industry":" Technology ", "profile":" Private notes "
+        "career":" Engineer ", "industry":" Technology ",
+        "school":" Example University ", "grad_date":" Spring 2028 ", "profile":" Private notes "
     }"#,
         )
         .await;
@@ -536,6 +537,8 @@ mod tests {
         );
         assert_eq!(input.career.as_deref(), Some("Engineer"));
         assert_eq!(input.industry.as_deref(), Some("Technology"));
+        assert_eq!(input.school.as_deref(), Some("Example University"));
+        assert_eq!(input.grad_date.as_deref(), Some("Spring 2028"));
         assert_eq!(input.profile.as_deref(), Some("Private notes"));
 
         assert_eq!(response.status(), StatusCode::CREATED);
@@ -630,6 +633,8 @@ mod tests {
         member.updated_at = Some("2020-01-01T00:00:00Z".parse().unwrap());
         member.career = Some("Engineer".into());
         member.industry = Some("Technology".into());
+        member.school = Some("Example University".into());
+        member.grad_date = Some("Spring 2028".into());
         member.role = Some(members::MemberRole::Mentor as i32);
 
         let admin = FakeAdmin {
@@ -651,6 +656,8 @@ mod tests {
         assert_eq!(body["instagram_username"], "person.photo");
         assert_eq!(body["career"], "Engineer");
         assert_eq!(body["industry"], "Technology");
+        assert_eq!(body["school"], "Example University");
+        assert_eq!(body["grad_date"], "Spring 2028");
         assert_eq!(body["role"], "mentor");
         assert_eq!(body["updated_at"], "2020-01-01T00:00:00Z");
         assert!(body.get("archived_at").is_none());
@@ -754,6 +761,8 @@ mod tests {
                     "instagram_username",
                     "career",
                     "industry",
+                    "school",
+                    "grad_date",
                     "profile",
                     "role",
                 ] {
@@ -780,6 +789,8 @@ mod tests {
                 input.instagram_username,
                 input.career,
                 input.industry,
+                input.school,
+                input.grad_date,
                 input.profile,
             ] {
                 assert_eq!(field.as_deref(), expected);

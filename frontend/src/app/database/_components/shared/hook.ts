@@ -47,6 +47,8 @@ const initialValues: MemberFormValues = {
   instagramUsername: "",
   career: "",
   industry: "",
+  school: "",
+  gradDate: "",
   profile: "",
   role: "",
 };
@@ -112,6 +114,8 @@ export const useMemberForm = (
       instagram_username: values.instagramUsername.trim() || null,
       career: values.career.trim() || null,
       industry: values.industry.trim() || null,
+      school: values.school.trim() || null,
+      grad_date: values.gradDate.trim() || null,
       profile: values.profile.trim() || null,
       role: values.role || null,
     }),
@@ -139,6 +143,8 @@ export const useEditMemberForm = (member: MemberDetails) => {
       instagramUsername: member.instagram_username ?? "",
       career: member.career ?? "",
       industry: member.industry ?? "",
+      school: member.school ?? "",
+      gradDate: member.grad_date ?? "",
       profile: member.profile ?? "",
       role: member.role ?? "",
       discordId: member.discord_id ?? "",
@@ -165,6 +171,8 @@ export const useEditMemberForm = (member: MemberDetails) => {
       body.instagram_username = values.instagram_username;
     if (form.isDirty("career")) body.career = values.career;
     if (form.isDirty("industry")) body.industry = values.industry;
+    if (form.isDirty("school")) body.school = values.school;
+    if (form.isDirty("gradDate")) body.grad_date = values.grad_date;
     if (form.isDirty("profile")) body.profile = values.profile;
     if (form.isDirty("role")) body.role = values.role;
 

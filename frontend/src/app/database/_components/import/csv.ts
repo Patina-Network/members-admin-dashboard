@@ -23,6 +23,8 @@ export const columns = [
   "instagram_username",
   "career",
   "industry",
+  "school",
+  "grad_date",
   "profile",
   "role",
 ] as const;
