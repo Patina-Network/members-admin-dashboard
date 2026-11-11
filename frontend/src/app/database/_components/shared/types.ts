@@ -1,5 +1,6 @@
 import type { useMemberForm } from "@/app/database/_components/shared/hook";
 import type {
+  CommunicationMethod,
   Member,
   MemberDetails,
   NewMember,
@@ -24,6 +25,7 @@ export type MemberFormValues = {
   industry: string;
   school: string;
   gradDate: string;
+  preferredCommunications: CommunicationMethod[];
   profile: string;
   role: NonNullable<NewMember["role"]> | "";
 };

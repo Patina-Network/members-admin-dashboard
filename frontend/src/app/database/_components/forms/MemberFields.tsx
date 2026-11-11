@@ -1,5 +1,7 @@
 import {
   Accordion,
+  Checkbox,
+  Group,
   NativeSelect,
   SimpleGrid,
   TextInput,
@@ -9,6 +11,7 @@ import {
 import type { MemberFieldsProps } from "@/app/database/_components/shared/types";
 
 import SuggestionField from "@/app/database/_components/forms/SuggestionField";
+import { communicationOptions } from "@/app/database/_components/shared/communicationMethods";
 import { roleOptions } from "@/app/database/_components/shared/memberRoles";
 
 export default function MemberFields({
@@ -110,6 +113,22 @@ export default function MemberFields({
                 disabled={pending}
               />
             </SimpleGrid>
+            <Checkbox.Group
+              {...form.getInputProps("preferredCommunications")}
+              label="Preferred Communications"
+              mt="sm"
+            >
+              <Group mt="xs">
+                {communicationOptions.map(({ value, label }) => (
+                  <Checkbox
+                    key={value}
+                    value={value}
+                    label={label}
+                    disabled={pending}
+                  />
+                ))}
+              </Group>
+            </Checkbox.Group>
           </Accordion.Panel>
         </Accordion.Item>
       </Accordion>
