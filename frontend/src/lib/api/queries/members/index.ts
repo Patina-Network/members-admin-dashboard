@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type {
   BulkMembers,
+  ListData,
   Member,
   MemberList,
   MemberUpdate,
@@ -26,31 +27,13 @@ const membersKey = listQueryKey();
 const uncertainWriteMessage =
   "Could not confirm whether the member was added. Reload the page before trying again.";
 
-export function matchesMemberSearch(member: Member, query: string) {
-  const prefix = query.trim().toLowerCase();
-  return [
-    member.first_name,
-    member.last_name,
-    member.email,
-    member.discord_id,
-    member.discord_username,
-    member.instagram_username,
-    member.linkedin_username,
-    String(member.member_id),
-  ].some((value) => value?.toLowerCase().startsWith(prefix));
-}
-
 export const useMembersQuery = (query: string) => {
+  const search = query.trim();
+  const params = search ? { query: search } : undefined;
   return useQuery({
     retry: false,
-    queryKey: membersKey,
-    queryFn: ({ signal }) => fetchMembers(signal),
-    select: (data: MemberList): MemberList => ({
-      ...data,
-      members: data.members.filter((member) =>
-        matchesMemberSearch(member, query),
-      ),
-    }),
+    queryKey: listQueryKey({ query: params }),
+    queryFn: ({ signal }) => fetchMembers(params, signal),
   });
 };
 
@@ -120,8 +103,8 @@ export const useAddMemberMutation = () => {
   });
 };
 
-async function fetchMembers(signal: AbortSignal) {
-  const result = await list({ signal });
+async function fetchMembers(query: ListData["query"], signal: AbortSignal) {
+  const result = await list({ ...(query ? { query } : {}), signal });
 
   if (!result.data) {
     throw new Error(result.error?.error ?? "Unable to load members");
@@ -214,7 +197,7 @@ export const useUpdateMemberMutation = () => {
       await queryClient.cancelQueries({ queryKey: membersKey });
 
       queryClient.setQueriesData<MemberList>(
-        { queryKey: membersKey },
+        { queryKey: membersKey, exact: true },
         (current) =>
           current ?
             {
@@ -265,7 +248,7 @@ export const useArchiveMemberMutation = () => {
       await queryClient.cancelQueries({ queryKey: membersKey });
 
       queryClient.setQueriesData<MemberList>(
-        { queryKey: membersKey },
+        { queryKey: membersKey, exact: true },
         (current) => {
           if (!current) return current;
 

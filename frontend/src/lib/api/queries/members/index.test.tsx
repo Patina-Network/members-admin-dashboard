@@ -16,7 +16,6 @@ import {
   update,
 } from "@/lib/api/generated/sdk.gen";
 import {
-  matchesMemberSearch,
   useAddMemberMutation,
   useArchiveMemberMutation,
   useBulkImportMembersMutation,
@@ -68,27 +67,52 @@ beforeEach(() => {
   vi.mocked(list).mockRejectedValue(new Error("refresh failed"));
 });
 
-it.each([
-  " ALI ",
-  "smith",
-  "alice@",
-  "123",
-  "discord-",
-  "insta-",
-  "linked-",
-  "42",
-])("matches the server's supported prefixes: %s", (query) => {
-  expect(matchesMemberSearch(member, query)).toBe(true);
+it("sends search text to the server and caches each response separately", async () => {
+  const { client, wrapper } = setup(false);
+  vi.mocked(list).mockResolvedValue({
+    data: { members: [member], total: 10 },
+  } as Awaited<ReturnType<typeof list>>);
+  const { result, rerender } = renderHook(
+    ({ query }) => useMembersQuery(query),
+    {
+      wrapper,
+      initialProps: { query: "  server-only  " },
+    },
+  );
+  await waitFor(() => expect(result.current.data?.members).toEqual([member]));
+  expect(list).toHaveBeenLastCalledWith({
+    query: { query: "server-only" },
+    signal: expect.any(AbortSignal),
+  });
+  expect(result.current.data?.total).toBe(10);
+  vi.mocked(list).mockResolvedValue({
+    data: { members: [], total: 10 },
+    error: undefined,
+  } as Awaited<ReturnType<typeof list>>);
+  rerender({ query: "other" });
+  await waitFor(() => expect(result.current.data?.members).toEqual([]));
+  expect(list).toHaveBeenLastCalledWith({
+    query: { query: "other" },
+    signal: expect.any(AbortSignal),
+  });
+  expect(
+    client.getQueryData(listQueryKey({ query: { query: "server-only" } })),
+  ).toEqual({ members: [member], total: 10 });
+  rerender({ query: "server-only" });
+  await waitFor(() => expect(result.current.data?.members).toEqual([member]));
+  expect(list).toHaveBeenCalledTimes(2);
 });
-it.each(["lice", "example.com", "Engineer", "Technology", "mentor"])(
-  "excludes substrings and unsupported fields: %s",
-  (query) => {
-    expect(matchesMemberSearch(member, query)).toBe(false);
-  },
-);
 
-it("updates every search view after a create even when refresh fails", async () => {
-  const { wrapper } = setup();
+it("refetches every active search after a create", async () => {
+  const { client, wrapper } = setup();
+  client.setQueryData(listQueryKey({ query: { query: "alice" } }), {
+    members: [member],
+    total: 1,
+  });
+  client.setQueryData(listQueryKey({ query: { query: "bob" } }), {
+    members: [],
+    total: 1,
+  });
   const added = {
     ...member,
     member_id: 43,
@@ -106,6 +130,14 @@ it("updates every search view after a create even when refresh fails", async () 
     }),
     { wrapper },
   );
+  vi.mocked(list).mockImplementation(async (options) => ({
+    request: new Request("http://localhost/api/members"),
+    response: new Response(),
+    data: {
+      members: options?.query?.query === "bob" ? [added] : [member],
+      total: 2,
+    },
+  }));
   await act(async () => {
     await result.current.add.mutateAsync({
       email: added.email,
@@ -121,8 +153,16 @@ it("updates every search view after a create even when refresh fails", async () 
   expect(result.current.bob.data?.total).toBe(2);
 });
 
-it("moves edited members between search views without waiting for refresh", async () => {
-  const { wrapper } = setup();
+it("refetches search membership after editing a member", async () => {
+  const { client, wrapper } = setup();
+  client.setQueryData(listQueryKey({ query: { query: "alice" } }), {
+    members: [member],
+    total: 1,
+  });
+  client.setQueryData(listQueryKey({ query: { query: "bob" } }), {
+    members: [],
+    total: 1,
+  });
   const changed = { ...member, first_name: "Bob", email: "bob@example.com" };
   vi.mocked(update).mockResolvedValue({ data: changed } as Awaited<
     ReturnType<typeof update>
@@ -135,6 +175,14 @@ it("moves edited members between search views without waiting for refresh", asyn
     }),
     { wrapper },
   );
+  vi.mocked(list).mockImplementation(async (options) => ({
+    request: new Request("http://localhost/api/members"),
+    response: new Response(),
+    data: {
+      members: options?.query?.query === "bob" ? [changed] : [],
+      total: 1,
+    },
+  }));
   await act(async () => {
     await result.current.edit.mutateAsync({
       memberId: 42,
@@ -189,3 +237,43 @@ it("does not turn a pending list into an incomplete list after import", async ()
   expect(client.getQueryData(key)).toBeUndefined();
   client.clear();
 });
+
+it.each(["archive", "import"] as const)(
+  "invalidates inactive search results after %s without guessing membership or totals",
+  async (action) => {
+    const { client, wrapper } = setup();
+    const searchKey = listQueryKey({ query: { query: "alice" } });
+    const cached = { members: [member], total: 5 };
+    client.setQueryData(searchKey, cached);
+    vi.mocked(archive).mockResolvedValue({
+      request: new Request("http://localhost/api/members/42"),
+      response: new Response(null, { status: 204 }),
+      data: undefined,
+    });
+    vi.mocked(bulkImport).mockResolvedValue({
+      data: {
+        results: [
+          {
+            index: 0,
+            outcome: "updated",
+            member: { ...member, first_name: "Bob" },
+          },
+        ],
+      },
+    } as Awaited<ReturnType<typeof bulkImport>>);
+    const { result } = renderHook(
+      () => ({
+        archive: useArchiveMemberMutation(),
+        bulk: useBulkImportMembersMutation(),
+      }),
+      { wrapper },
+    );
+    await act(async () => {
+      if (action === "archive") await result.current.archive.mutateAsync(42);
+      else
+        await result.current.bulk.mutateAsync({ mode: "upsert", members: [] });
+    });
+    expect(client.getQueryState(searchKey)?.isInvalidated).toBe(true);
+    expect(client.getQueryData(searchKey)).toEqual(cached);
+  },
+);

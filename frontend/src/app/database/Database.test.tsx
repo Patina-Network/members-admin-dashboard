@@ -1093,7 +1093,18 @@ describe("member list states", () => {
       first_name: index === 0 ? "Angela" : "Nancy",
       last_name: index === 0 ? "Yu" : "Huang",
     }));
-    vi.mocked(list).mockResolvedValue(memberList(members));
+    vi.mocked(list).mockImplementation(async (options) => ({
+      ...memberList([]),
+      data: {
+        members:
+          options?.query?.query ?
+            options.query.query.startsWith("A") ?
+              [members[0]]
+            : []
+          : members,
+        total: 21,
+      },
+    }));
 
     renderPage(false, "/database?page=3");
     await screen.findByText("person21@example.com");
@@ -1104,6 +1115,7 @@ describe("member list states", () => {
 
     await waitFor(() => {
       expect(list).toHaveBeenCalledWith({
+        query: { query: "ANG" },
         signal: expect.any(AbortSignal),
       });
       expect(screen.getByText("person1@example.com")).toBeInTheDocument();
@@ -1112,7 +1124,6 @@ describe("member list states", () => {
       ).not.toBeInTheDocument();
       expect(screen.getByText("1 matching member")).toBeInTheDocument();
       expect(screen.getByText("21 members")).toBeInTheDocument();
-      expect(list).toHaveBeenCalledTimes(1);
       expect(screen.getByLabelText("Current URL")).toHaveTextContent("page=1");
     });
 
@@ -1122,6 +1133,7 @@ describe("member list states", () => {
       await screen.findByText("No members match your search"),
     ).toBeInTheDocument();
     expect(list).toHaveBeenCalledWith({
+      query: { query: "Nobody" },
       signal: expect.any(AbortSignal),
     });
 
@@ -1150,6 +1162,7 @@ describe("member list states", () => {
     expect(screen.queryByText("person1@example.com")).not.toBeInTheDocument();
     expect(screen.getByText("12 matching members")).toBeInTheDocument();
     expect(list).toHaveBeenCalledWith({
+      query: { query: "NAN" },
       signal: expect.any(AbortSignal),
     });
   });
@@ -1322,7 +1335,7 @@ describe("archive member", () => {
   });
 });
 
-it("filters the shared list using the search restored from the URL", async () => {
+it("requests server results using the search restored from the URL", async () => {
   const frank = {
     ...member,
     member_id: 2,
@@ -1330,28 +1343,16 @@ it("filters the shared list using the search restored from the URL", async () =>
     last_name: "Lee",
     email: "frank@example.com",
   };
-  vi.mocked(list).mockResolvedValue(
-    memberList([
-      {
-        ...member,
-        member_id: 1,
-        first_name: "Sofia",
-        email: "sofia@example.com",
-      },
-      frank,
-      {
-        ...member,
-        member_id: 3,
-        first_name: "Anna",
-        email: "anna@example.com",
-      },
-    ]),
-  );
+  vi.mocked(list).mockResolvedValue({
+    ...memberList([frank]),
+    data: { members: [frank], total: 3 },
+  });
 
   renderPage(false, "/database?search=f");
 
   expect(await screen.findByText("frank@example.com")).toBeInTheDocument();
   expect(list).toHaveBeenCalledWith({
+    query: { query: "f" },
     signal: expect.any(AbortSignal),
   });
   expect(screen.queryByText("sofia@example.com")).not.toBeInTheDocument();
@@ -1450,7 +1451,9 @@ it.each(["/database?page=2", "/database?page=2&search=Ada&role=mentor"])(
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
 
-    expect(await screen.findByText("new@example.com")).toBeInTheDocument();
+    if (!entry.includes("search=")) {
+      expect(await screen.findByText("new@example.com")).toBeInTheDocument();
+    }
 
     await act(async () => {
       pending.resolve(memberList([...members, created]));
