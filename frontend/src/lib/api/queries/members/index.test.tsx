@@ -47,7 +47,9 @@ const member: Member = {
   industry: "Technology",
   role: "mentor",
 };
-const key = listQueryKey();
+const key = listQueryKey({
+  query: { query: "", page: 1, page_size: 10, roles: "" },
+});
 function setup(populated = true) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Infinity } },
@@ -70,7 +72,15 @@ beforeEach(() => {
 it("sends search text to the server and caches each response separately", async () => {
   const { client, wrapper } = setup(false);
   vi.mocked(list).mockResolvedValue({
-    data: { members: [member], total: 10 },
+    data: {
+      members: [member],
+      total: 10,
+      matching_total: 10,
+      pages: 1,
+      hasNextPage: false,
+      page: 1,
+      page_size: 10,
+    },
   } as Awaited<ReturnType<typeof list>>);
   const { result, rerender } = renderHook(
     ({ query }) => useMembersQuery(query),
@@ -81,23 +91,35 @@ it("sends search text to the server and caches each response separately", async 
   );
   await waitFor(() => expect(result.current.data?.members).toEqual([member]));
   expect(list).toHaveBeenLastCalledWith({
-    query: { query: "server-only" },
+    query: { query: "server-only", page: 1, page_size: 10, roles: "" },
     signal: expect.any(AbortSignal),
   });
   expect(result.current.data?.total).toBe(10);
   vi.mocked(list).mockResolvedValue({
-    data: { members: [], total: 10 },
+    data: {
+      members: [],
+      total: 10,
+      matching_total: 10,
+      pages: 1,
+      hasNextPage: false,
+      page: 1,
+      page_size: 10,
+    },
     error: undefined,
   } as Awaited<ReturnType<typeof list>>);
   rerender({ query: "other" });
   await waitFor(() => expect(result.current.data?.members).toEqual([]));
   expect(list).toHaveBeenLastCalledWith({
-    query: { query: "other" },
+    query: { query: "other", page: 1, page_size: 10, roles: "" },
     signal: expect.any(AbortSignal),
   });
   expect(
-    client.getQueryData(listQueryKey({ query: { query: "server-only" } })),
-  ).toEqual({ members: [member], total: 10 });
+    client.getQueryData(
+      listQueryKey({
+        query: { query: "server-only", page: 1, page_size: 10, roles: "" },
+      }),
+    ),
+  ).toMatchObject({ members: [member], total: 10 });
   rerender({ query: "server-only" });
   await waitFor(() => expect(result.current.data?.members).toEqual([member]));
   expect(list).toHaveBeenCalledTimes(2);
@@ -105,14 +127,24 @@ it("sends search text to the server and caches each response separately", async 
 
 it("refetches every active search after a create", async () => {
   const { client, wrapper } = setup();
-  client.setQueryData(listQueryKey({ query: { query: "alice" } }), {
-    members: [member],
-    total: 1,
-  });
-  client.setQueryData(listQueryKey({ query: { query: "bob" } }), {
-    members: [],
-    total: 1,
-  });
+  client.setQueryData(
+    listQueryKey({
+      query: { query: "alice", page: 1, page_size: 10, roles: "" },
+    }),
+    {
+      members: [member],
+      total: 1,
+    },
+  );
+  client.setQueryData(
+    listQueryKey({
+      query: { query: "bob", page: 1, page_size: 10, roles: "" },
+    }),
+    {
+      members: [],
+      total: 1,
+    },
+  );
   const added = {
     ...member,
     member_id: 43,
@@ -136,6 +168,11 @@ it("refetches every active search after a create", async () => {
     data: {
       members: options?.query?.query === "bob" ? [added] : [member],
       total: 2,
+      matching_total: 1,
+      pages: 1,
+      hasNextPage: false,
+      page: 1,
+      page_size: 10,
     },
   }));
   await act(async () => {
@@ -155,14 +192,24 @@ it("refetches every active search after a create", async () => {
 
 it("refetches search membership after editing a member", async () => {
   const { client, wrapper } = setup();
-  client.setQueryData(listQueryKey({ query: { query: "alice" } }), {
-    members: [member],
-    total: 1,
-  });
-  client.setQueryData(listQueryKey({ query: { query: "bob" } }), {
-    members: [],
-    total: 1,
-  });
+  client.setQueryData(
+    listQueryKey({
+      query: { query: "alice", page: 1, page_size: 10, roles: "" },
+    }),
+    {
+      members: [member],
+      total: 1,
+    },
+  );
+  client.setQueryData(
+    listQueryKey({
+      query: { query: "bob", page: 1, page_size: 10, roles: "" },
+    }),
+    {
+      members: [],
+      total: 1,
+    },
+  );
   const changed = { ...member, first_name: "Bob", email: "bob@example.com" };
   vi.mocked(update).mockResolvedValue({ data: changed } as Awaited<
     ReturnType<typeof update>
@@ -181,6 +228,11 @@ it("refetches search membership after editing a member", async () => {
     data: {
       members: options?.query?.query === "bob" ? [changed] : [],
       total: 1,
+      matching_total: options?.query?.query === "bob" ? 1 : 0,
+      pages: options?.query?.query === "bob" ? 1 : 0,
+      hasNextPage: false,
+      page: 1,
+      page_size: 10,
     },
   }));
   await act(async () => {
@@ -242,7 +294,9 @@ it.each(["archive", "import"] as const)(
   "invalidates inactive search results after %s without guessing membership or totals",
   async (action) => {
     const { client, wrapper } = setup();
-    const searchKey = listQueryKey({ query: { query: "alice" } });
+    const searchKey = listQueryKey({
+      query: { query: "alice", page: 1, page_size: 10, roles: "" },
+    });
     const cached = { members: [member], total: 5 };
     client.setQueryData(searchKey, cached);
     vi.mocked(archive).mockResolvedValue({

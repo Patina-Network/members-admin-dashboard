@@ -45,10 +45,10 @@ pub trait MembersGrpcClient: Clone + Send + Sync + 'static {
         request: Request<members::GetMemberRequest>,
     ) -> impl Future<Output = Result<Response<members::GetMemberResponse>, Status>> + Send;
 
-    fn list_members(
+    fn search_members(
         &mut self,
-        request: Request<members::ListMembersRequest>,
-    ) -> impl Future<Output = Result<Response<members::ListMembersResponse>, Status>> + Send;
+        request: Request<members::SearchMembersRequest>,
+    ) -> impl Future<Output = Result<Response<members::SearchMembersResponse>, Status>> + Send;
 
     fn list_careers(
         &mut self,
@@ -69,11 +69,11 @@ impl MembersGrpcClient for MembersServiceClient<Channel> {
         MembersServiceClient::get_member(self, request).await
     }
 
-    async fn list_members(
+    async fn search_members(
         &mut self,
-        request: Request<members::ListMembersRequest>,
-    ) -> Result<Response<members::ListMembersResponse>, Status> {
-        MembersServiceClient::list_members(self, request).await
+        request: Request<members::SearchMembersRequest>,
+    ) -> Result<Response<members::SearchMembersResponse>, Status> {
+        MembersServiceClient::search_members(self, request).await
     }
 
     async fn list_careers(
@@ -310,24 +310,10 @@ pub(crate) mod fake {
         }
     }
 
-    /// Fake [`MembersGrpcClient`]. `list_members` returns queued pages in order; requests are recorded.
-    ///
-    /// ```ignore
-    /// let members = FakeMembers::pages([Outcome::Fail(Code::Unavailable)]);
-    ///
-    /// let mut client = members.clone();
-    /// let result = call(timeout, ListMembersRequest::default(), |request| async move {
-    ///     client.list_members(request).await
-    /// })
-    /// .await;
-    ///
-    /// assert!(matches!(result, Err(UpstreamError::Unavailable)));
-    /// assert_eq!(sent(&members.list_requests).len(), 1);
-    /// ```
     #[derive(Clone, Default)]
     pub(crate) struct FakeMembers {
-        pub(crate) list_requests: Arc<Mutex<Vec<members::ListMembersRequest>>>,
-        pub(crate) list_responses: Arc<Mutex<VecDeque<Outcome<members::ListMembersResponse>>>>,
+        pub(crate) search_requests: Arc<Mutex<Vec<members::SearchMembersRequest>>>,
+        pub(crate) search_responses: Arc<Mutex<VecDeque<Outcome<members::SearchMembersResponse>>>>,
         pub(crate) careers_requests: Arc<Mutex<Vec<members::ListCareersRequest>>>,
         pub(crate) careers_response: Outcome<members::ListCareersResponse>,
         pub(crate) industries_requests: Arc<Mutex<Vec<members::ListIndustriesRequest>>>,
@@ -335,11 +321,11 @@ pub(crate) mod fake {
     }
 
     impl FakeMembers {
-        pub(crate) fn pages(
-            pages: impl IntoIterator<Item = Outcome<members::ListMembersResponse>>,
+        pub(crate) fn search_pages(
+            pages: impl IntoIterator<Item = Outcome<members::SearchMembersResponse>>,
         ) -> Self {
             Self {
-                list_responses: Arc::new(Mutex::new(pages.into_iter().collect())),
+                search_responses: Arc::new(Mutex::new(pages.into_iter().collect())),
                 ..Default::default()
             }
         }
@@ -353,22 +339,22 @@ pub(crate) mod fake {
             panic!("unexpected call to get_member")
         }
 
-        async fn list_members(
+        async fn search_members(
             &mut self,
-            request: Request<members::ListMembersRequest>,
-        ) -> Result<Response<members::ListMembersResponse>, Status> {
-            assert!(request.metadata().contains_key("grpc-timeout"));
-            self.list_requests
+            request: Request<members::SearchMembersRequest>,
+        ) -> Result<Response<members::SearchMembersResponse>, Status> {
+            assert_deadline(&request);
+            self.search_requests
                 .lock()
                 .unwrap()
                 .push(request.into_inner());
             let page = self
-                .list_responses
+                .search_responses
                 .lock()
                 .unwrap()
                 .pop_front()
                 .unwrap_or_default();
-            respond(page, "list_members").await
+            respond(page, "search_members").await
         }
 
         async fn list_careers(

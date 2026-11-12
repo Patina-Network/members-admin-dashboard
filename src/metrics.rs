@@ -21,7 +21,7 @@ const LATENCY_BUCKETS: &[f64] = &[
 /// Outbound gRPC method, used as the `method` label.
 #[derive(Clone, Copy, AsRefStr)]
 pub enum GrpcMethod {
-    ListMembers,
+    SearchMembers,
     ListCareers,
     ListIndustries,
     GetSensitiveMember,

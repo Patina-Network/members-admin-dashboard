@@ -4,7 +4,6 @@ import type {
   BulkMembers,
   ListData,
   Member,
-  MemberList,
   MemberUpdate,
   NewMember,
 } from "@/lib/api/generated/types.gen";
@@ -27,11 +26,21 @@ const membersKey = listQueryKey();
 const uncertainWriteMessage =
   "Could not confirm whether the member was added. Reload the page before trying again.";
 
-export const useMembersQuery = (query: string) => {
-  const search = query.trim();
-  const params = search ? { query: search } : undefined;
+export const useMembersQuery = (
+  query: string,
+  page = 1,
+  roles: string[] = [],
+  enabled = true,
+) => {
+  const params = {
+    query: query.trim(),
+    page,
+    page_size: 10,
+    roles: [...roles].sort().join(","),
+  };
   return useQuery({
     retry: false,
+    enabled,
     queryKey: listQueryKey({ query: params }),
     queryFn: ({ signal }) => fetchMembers(params, signal),
   });
@@ -74,30 +83,8 @@ export const useAddMemberMutation = () => {
   return useMutation({
     retry: false,
     mutationFn: createMember,
-    onSuccess: async (member) => {
+    onSuccess: async () => {
       await queryClient.cancelQueries({ queryKey: membersKey });
-
-      const updateList = (current: MemberList | undefined) => {
-        if (!current) return current;
-
-        if (current.members.some((row) => row.member_id === member.member_id)) {
-          return {
-            ...current,
-            members: current.members.map((row) =>
-              row.member_id === member.member_id ? member : row,
-            ),
-          };
-        }
-
-        return {
-          ...current,
-          members: [member, ...current.members],
-          total: current.total + 1,
-        };
-      };
-
-      queryClient.setQueryData<MemberList>(membersKey, updateList);
-
       void queryClient.invalidateQueries({ queryKey: membersKey });
     },
   });
@@ -196,19 +183,6 @@ export const useUpdateMemberMutation = () => {
     onSuccess: async (member: Member) => {
       await queryClient.cancelQueries({ queryKey: membersKey });
 
-      queryClient.setQueriesData<MemberList>(
-        { queryKey: membersKey, exact: true },
-        (current) =>
-          current ?
-            {
-              ...current,
-              members: current.members.map((row) =>
-                row.member_id === member.member_id ? member : row,
-              ),
-            }
-          : current,
-      );
-
       void queryClient.invalidateQueries({ queryKey: membersKey });
       void queryClient.invalidateQueries({
         queryKey: detailsQueryKey({ path: { member_id: member.member_id } }),
@@ -244,30 +218,8 @@ export const useArchiveMemberMutation = () => {
 
       return memberId;
     },
-    onSuccess: async (memberId) => {
+    onSuccess: async () => {
       await queryClient.cancelQueries({ queryKey: membersKey });
-
-      queryClient.setQueriesData<MemberList>(
-        { queryKey: membersKey, exact: true },
-        (current) => {
-          if (!current) return current;
-
-          return {
-            ...current,
-            members: current.members.filter(
-              (row) => row.member_id !== memberId,
-            ),
-            total: Math.max(
-              0,
-              current.total -
-                Number(
-                  current.members.some((row) => row.member_id === memberId),
-                ),
-            ),
-          };
-        },
-      );
-
       void queryClient.invalidateQueries({ queryKey: membersKey });
     },
   });
@@ -302,43 +254,13 @@ export const useBulkImportMembersMutation = () => {
     onSettled: async (data) => {
       await queryClient.cancelQueries({ queryKey: membersKey });
 
-      const imported = new Map<number, Member>();
       for (const result of data?.results ?? []) {
-        if (result.outcome === "failed") continue;
-        imported.set(result.member.member_id, result.member);
         if (result.outcome === "updated")
           void queryClient.invalidateQueries({
             queryKey: detailsQueryKey({
               path: { member_id: result.member.member_id },
             }),
           });
-      }
-
-      if (imported.size) {
-        queryClient.setQueriesData<MemberList>(
-          { queryKey: membersKey, exact: true },
-          (current) => {
-            if (!current) return current;
-            const existing = current.members;
-            const existingIds = new Set(
-              existing.map((member) => member.member_id),
-            );
-            const added = [...imported.values()].filter(
-              (member) => !existingIds.has(member.member_id),
-            );
-
-            return {
-              ...current,
-              members: [
-                ...added,
-                ...existing.map(
-                  (member) => imported.get(member.member_id) ?? member,
-                ),
-              ],
-              total: current.total + added.length,
-            };
-          },
-        );
       }
 
       void queryClient.invalidateQueries({ queryKey: membersKey });

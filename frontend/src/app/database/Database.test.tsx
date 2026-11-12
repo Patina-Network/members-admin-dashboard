@@ -141,16 +141,60 @@ const savedMember = () => ({
 });
 
 type MemberListResult = {
-  data: { members: MemberDetails[]; total: number };
+  data: {
+    members: MemberDetails[];
+    total: number;
+    matching_total: number;
+    pages: number;
+    hasNextPage: boolean;
+    page: number;
+    page_size: number;
+  };
   request: Request;
   response: Response;
 };
 
-const memberList = (members: MemberDetails[]): MemberListResult => ({
-  data: { members, total: members.length },
+const memberList = (
+  members: MemberDetails[],
+  page = 1,
+  total = members.length,
+  matchingTotal = total,
+): MemberListResult => ({
+  data: {
+    members,
+    total,
+    matching_total: matchingTotal,
+    pages: Math.ceil(matchingTotal / 10),
+    hasNextPage: page < Math.ceil(matchingTotal / 10),
+    page,
+    page_size: 10,
+  },
   request: new Request("http://localhost/api/members"),
   response,
 });
+
+function mockMemberPages(members: MemberDetails[], total = members.length) {
+  vi.mocked(list).mockImplementation(async (options) => {
+    const query = options?.query;
+    const page = query?.page ?? 1;
+    const roles = query?.roles?.split(",").filter(Boolean) ?? [];
+    const prefix = query?.query?.toLowerCase() ?? "";
+    const matches = members.filter(
+      (row) =>
+        (!roles.length || (row.role && roles.includes(row.role))) &&
+        (!prefix ||
+          [row.first_name, row.last_name, row.email].some((value) =>
+            value.toLowerCase().startsWith(prefix),
+          )),
+    );
+    return memberList(
+      matches.slice((page - 1) * 10, page * 10),
+      page,
+      total,
+      matches.length,
+    );
+  });
+}
 
 beforeEach(() => {
   vi.mocked(details).mockResolvedValue({
@@ -174,7 +218,15 @@ beforeEach(() => {
     response,
   });
   vi.mocked(list).mockResolvedValue({
-    data: { members: [], total: 0 },
+    data: {
+      members: [],
+      total: 0,
+      matching_total: 0,
+      pages: 0,
+      hasNextPage: false,
+      page: 1,
+      page_size: 10,
+    },
     request: new Request("http://localhost/api/members"),
     response,
   });
@@ -210,7 +262,15 @@ describe("add member", () => {
 
     await fillForm(user);
     vi.mocked(list).mockResolvedValue({
-      data: { members: [member], total: 1 },
+      data: {
+        members: [member],
+        total: 1,
+        matching_total: 1,
+        pages: 1,
+        hasNextPage: false,
+        page: 1,
+        page_size: 10,
+      },
       request: new Request("http://localhost/api/members"),
       response,
     });
@@ -854,7 +914,7 @@ describe("edit member", () => {
     expect(update).not.toHaveBeenCalled();
   });
 
-  it("keeps the refreshed row when the subsequent list refresh fails", async () => {
+  it("shows a refresh error with the last confirmed server page after an edit", async () => {
     vi.mocked(list)
       .mockResolvedValueOnce(memberList([member]))
       .mockRejectedValue(new Error("offline"));
@@ -879,7 +939,10 @@ describe("edit member", () => {
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
 
-    expect(screen.getByText("Saved")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Unable to refresh members"),
+    ).toBeInTheDocument();
+    expect(screen.getByText(member.first_name)).toBeInTheDocument();
   });
 
   it("does not retry uncertain updates and retains entered values", async () => {
@@ -1039,7 +1102,7 @@ describe("member list states", () => {
       member_id: index + 1,
       email: `person${index + 1}@example.com`,
     }));
-    vi.mocked(list).mockResolvedValue(memberList(members));
+    mockMemberPages(members);
 
     renderPage(false, "/database?filter=active");
     await screen.findByText("person1@example.com");
@@ -1063,7 +1126,9 @@ describe("member list states", () => {
       screen.queryByText("Members will appear here"),
     ).not.toBeInTheDocument();
 
-    await act(async () => pending.resolve(memberList(members)));
+    await act(async () =>
+      pending.resolve(memberList(members.slice(10, 20), 2, members.length)),
+    );
     expect(await screen.findByText("person11@example.com")).toBeInTheDocument();
     expect(screen.queryByText("person1@example.com")).not.toBeInTheDocument();
     expect(screen.queryByText("Loading members…")).not.toBeInTheDocument();
@@ -1075,7 +1140,9 @@ describe("member list states", () => {
       vi.mocked(list).mockResolvedValue(memberList([member]));
 
       renderPage(false, `/database?page=${page}&filter=active`);
-      expect(await screen.findByText(member.email)).toBeInTheDocument();
+      await waitFor(() =>
+        expect(screen.getByText(member.email)).toBeInTheDocument(),
+      );
 
       await waitFor(() =>
         expect(screen.getByLabelText("Current URL")).toHaveTextContent(
@@ -1093,29 +1160,21 @@ describe("member list states", () => {
       first_name: index === 0 ? "Angela" : "Nancy",
       last_name: index === 0 ? "Yu" : "Huang",
     }));
-    vi.mocked(list).mockImplementation(async (options) => ({
-      ...memberList([]),
-      data: {
-        members:
-          options?.query?.query ?
-            options.query.query.startsWith("A") ?
-              [members[0]]
-            : []
-          : members,
-        total: 21,
-      },
-    }));
+    mockMemberPages(members);
 
     renderPage(false, "/database?page=3");
     await screen.findByText("person21@example.com");
-    expect(list).toHaveBeenCalledWith({ signal: expect.any(AbortSignal) });
+    expect(list).toHaveBeenCalledWith({
+      query: { query: "", page: 3, page_size: 10, roles: "" },
+      signal: expect.any(AbortSignal),
+    });
 
     const user = userEvent.setup();
     await user.type(screen.getByLabelText("Search members"), "ANG");
 
     await waitFor(() => {
       expect(list).toHaveBeenCalledWith({
-        query: { query: "ANG" },
+        query: { query: "ANG", page: 1, page_size: 10, roles: "" },
         signal: expect.any(AbortSignal),
       });
       expect(screen.getByText("person1@example.com")).toBeInTheDocument();
@@ -1133,7 +1192,7 @@ describe("member list states", () => {
       await screen.findByText("No members match your search"),
     ).toBeInTheDocument();
     expect(list).toHaveBeenCalledWith({
-      query: { query: "Nobody" },
+      query: { query: "Nobody", page: 1, page_size: 10, roles: "" },
       signal: expect.any(AbortSignal),
     });
 
@@ -1153,7 +1212,7 @@ describe("member list states", () => {
       first_name: "Nancy",
       last_name: "Huang",
     }));
-    vi.mocked(list).mockResolvedValue(memberList(members));
+    mockMemberPages(members);
 
     renderPage(false, "/database?search=NAN&page=2");
 
@@ -1162,7 +1221,7 @@ describe("member list states", () => {
     expect(screen.queryByText("person1@example.com")).not.toBeInTheDocument();
     expect(screen.getByText("12 matching members")).toBeInTheDocument();
     expect(list).toHaveBeenCalledWith({
-      query: { query: "NAN" },
+      query: { query: "NAN", page: 2, page_size: 10, roles: "" },
       signal: expect.any(AbortSignal),
     });
   });
@@ -1173,11 +1232,7 @@ describe("member list states", () => {
       member_id: index + 1,
       email: `person${index + 1}@example.com`,
     }));
-    vi.mocked(list).mockResolvedValue({
-      data: { members, total: 40 },
-      request: new Request("http://localhost/api/members"),
-      response,
-    });
+    mockMemberPages(members, 40);
 
     renderPage();
     expect(await screen.findByText("40 members")).toBeInTheDocument();
@@ -1185,7 +1240,7 @@ describe("member list states", () => {
     expect(screen.queryByText("person11@example.com")).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "2" }));
-    expect(screen.getByText("person11@example.com")).toBeInTheDocument();
+    expect(await screen.findByText("person11@example.com")).toBeInTheDocument();
     expect(screen.queryByText("person1@example.com")).not.toBeInTheDocument();
     expect(screen.getByText("40 members")).toBeInTheDocument();
   });
@@ -1335,6 +1390,30 @@ describe("archive member", () => {
   });
 });
 
+it("uses the server page count when its effective page size differs", async () => {
+  const members = Array.from({ length: 5 }, (_, index) => ({
+    ...member,
+    member_id: index + 1,
+    email: `page${index}@example.com`,
+  }));
+  vi.mocked(list).mockResolvedValue({
+    ...memberList(members),
+    data: {
+      members,
+      total: 6,
+      matching_total: 6,
+      page: 1,
+      page_size: 5,
+      pages: 2,
+      hasNextPage: true,
+    },
+  });
+  renderPage();
+  await screen.findByText("page0@example.com");
+  expect(screen.getByRole("button", { name: "2" })).toBeEnabled();
+  expect(screen.queryByRole("button", { name: "3" })).not.toBeInTheDocument();
+});
+
 it("requests server results using the search restored from the URL", async () => {
   const frank = {
     ...member,
@@ -1345,14 +1424,22 @@ it("requests server results using the search restored from the URL", async () =>
   };
   vi.mocked(list).mockResolvedValue({
     ...memberList([frank]),
-    data: { members: [frank], total: 3 },
+    data: {
+      members: [frank],
+      total: 3,
+      matching_total: 1,
+      pages: 1,
+      hasNextPage: false,
+      page: 1,
+      page_size: 10,
+    },
   });
 
   renderPage(false, "/database?search=f");
 
   expect(await screen.findByText("frank@example.com")).toBeInTheDocument();
   expect(list).toHaveBeenCalledWith({
-    query: { query: "f" },
+    query: { query: "f", page: 1, page_size: 10, roles: "" },
     signal: expect.any(AbortSignal),
   });
   expect(screen.queryByText("sofia@example.com")).not.toBeInTheDocument();
@@ -1362,31 +1449,29 @@ it("requests server results using the search restored from the URL", async () =>
 });
 
 it("filters by role from the button under Add and keeps that filter in the URL", async () => {
-  vi.mocked(list).mockResolvedValue(
-    memberList([
-      {
-        ...member,
-        member_id: 1,
-        first_name: "Sofia",
-        email: "sofia@example.com",
-        role: "mentee",
-      },
-      {
-        ...member,
-        member_id: 2,
-        first_name: "Frank",
-        email: "frank@example.com",
-        role: "mentor",
-      },
-      {
-        ...member,
-        member_id: 3,
-        first_name: "Anna",
-        email: "anna@example.com",
-        role: null,
-      },
-    ]),
-  );
+  mockMemberPages([
+    {
+      ...member,
+      member_id: 1,
+      first_name: "Sofia",
+      email: "sofia@example.com",
+      role: "mentee",
+    },
+    {
+      ...member,
+      member_id: 2,
+      first_name: "Frank",
+      email: "frank@example.com",
+      role: "mentor",
+    },
+    {
+      ...member,
+      member_id: 3,
+      first_name: "Anna",
+      email: "anna@example.com",
+      role: null,
+    },
+  ]);
 
   renderPage(false, "/database?page=1");
   const user = userEvent.setup();
@@ -1395,7 +1480,7 @@ it("filters by role from the button under Add and keeps that filter in the URL",
   await user.click(screen.getByRole("button", { name: "Filters" }));
   await user.click(screen.getByRole("checkbox", { name: "Mentor" }));
 
-  expect(screen.getByText("frank@example.com")).toBeInTheDocument();
+  expect(await screen.findByText("frank@example.com")).toBeInTheDocument();
   expect(screen.queryByText("sofia@example.com")).not.toBeInTheDocument();
   expect(screen.queryByText("anna@example.com")).not.toBeInTheDocument();
   expect(screen.getByText("1 matching member")).toBeInTheDocument();
@@ -1404,14 +1489,14 @@ it("filters by role from the button under Add and keeps that filter in the URL",
   expect(screen.getByLabelText("Current URL")).toHaveTextContent("page=1");
 
   await user.click(screen.getByRole("checkbox", { name: "Mentee" }));
-  expect(screen.getByText("sofia@example.com")).toBeInTheDocument();
-  expect(screen.getByText("frank@example.com")).toBeInTheDocument();
+  expect(await screen.findByText("sofia@example.com")).toBeInTheDocument();
+  expect(await screen.findByText("frank@example.com")).toBeInTheDocument();
   expect(screen.getByText("2 matching members")).toBeInTheDocument();
 
   await user.click(screen.getByRole("checkbox", { name: "Mentor" }));
   await user.click(screen.getByRole("checkbox", { name: "Mentee" }));
 
-  expect(screen.getByText("anna@example.com")).toBeInTheDocument();
+  expect(await screen.findByText("anna@example.com")).toBeInTheDocument();
   expect(screen.queryByText("1 matching member")).not.toBeInTheDocument();
 });
 
@@ -1428,7 +1513,7 @@ it.each(["/database?page=2", "/database?page=2&search=Ada&role=mentor"])(
 
     const pending = deferred<MemberListResult>();
     vi.mocked(list)
-      .mockResolvedValueOnce(memberList(members))
+      .mockResolvedValueOnce(memberList(members.slice(10), 2, members.length))
       .mockReturnValue(pending.promise);
 
     const created = {
@@ -1451,75 +1536,42 @@ it.each(["/database?page=2", "/database?page=2&search=Ada&role=mentor"])(
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
 
-    if (!entry.includes("search=")) {
-      expect(await screen.findByText("new@example.com")).toBeInTheDocument();
-    }
+    expect(screen.queryByText("new@example.com")).not.toBeInTheDocument();
 
     await act(async () => {
-      pending.resolve(memberList([...members, created]));
+      pending.resolve(memberList([created, ...members.slice(0, 9)], 1, 12));
     });
 
     await waitFor(() =>
-      expect(screen.getByLabelText("Current URL")).toHaveTextContent("?page=2"),
+      expect(screen.getByLabelText("Current URL")).toHaveTextContent("?page=1"),
     );
-    expect(screen.getByText("new@example.com")).toBeInTheDocument();
+    expect(await screen.findByText("new@example.com")).toBeInTheDocument();
   },
 );
 
-it.each([false, true])(
-  "respects history after creation when refresh has failed: %s",
-  async (failBeforeBack) => {
-    const members = Array.from({ length: 21 }, (_, i) => ({
-      ...member,
-      member_id: i + 1,
-      email: `history${i}@example.com`,
-    }));
-
-    const pending = deferred<MemberListResult>();
-    vi.mocked(list)
-      .mockResolvedValueOnce(memberList(members))
-      .mockReturnValue(pending.promise);
-
-    const created = { ...member, member_id: 22, email: "created@example.com" };
-    vi.mocked(create).mockResolvedValue({ ...savedMember(), data: created });
-
-    renderPage(false, "/database?page=2");
-    await screen.findByText("history10@example.com");
-    await userEvent.click(screen.getByRole("button", { name: "3" }));
-
-    const user = await openForm();
-    await fillForm(user);
-
-    submitForm();
-    await screen.findByText("created@example.com");
-
-    const failRefresh = async () => {
-      await act(async () => {
-        pending.reject(new Error("Refresh failed"));
-      });
-      await screen.findByText("Unable to refresh members");
-    };
-
-    if (failBeforeBack) await failRefresh();
-
-    await user.click(screen.getByRole("button", { name: "History back" }));
-    await waitFor(() =>
-      expect(screen.getByLabelText("Current URL")).toHaveTextContent("?page=2"),
-    );
-
-    expect(
-      await screen.findByText("history10@example.com"),
-    ).toBeInTheDocument();
-    expect(screen.queryByText("created@example.com")).not.toBeInTheDocument();
-
-    if (!failBeforeBack) await failRefresh();
-    expect(screen.getByText("history10@example.com")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "History forward" }));
-    expect(await screen.findByText("created@example.com")).toBeInTheDocument();
-    expect(screen.getByLabelText("Current URL")).toHaveTextContent("?page=1");
-  },
-);
+it("restores a cached server page through history after a failed refresh", async () => {
+  const members = Array.from({ length: 21 }, (_, i) => ({
+    ...member,
+    member_id: i + 1,
+    email: `history${i}@example.com`,
+  }));
+  mockMemberPages(members);
+  renderPage(false, "/database?page=2");
+  const user = userEvent.setup();
+  await screen.findByText("history10@example.com");
+  await user.click(screen.getByRole("button", { name: "3" }));
+  await screen.findByText("history20@example.com");
+  vi.mocked(list).mockRejectedValue(new Error("Refresh failed"));
+  await user.click(screen.getByRole("button", { name: "History back" }));
+  expect(await screen.findByText("history10@example.com")).toBeInTheDocument();
+  expect(
+    await screen.findByText("Unable to refresh members"),
+  ).toBeInTheDocument();
+  expect(screen.getByLabelText("Current URL")).toHaveTextContent("?page=2");
+  await user.click(screen.getByRole("button", { name: "History forward" }));
+  expect(await screen.findByText("history20@example.com")).toBeInTheDocument();
+  expect(screen.getByLabelText("Current URL")).toHaveTextContent("?page=3");
+});
 
 it("previews CSV, cancels to upload, submits bulk and shows row outcomes", async () => {
   const refresh = deferred<MemberListResult>();
@@ -1694,16 +1746,16 @@ it("updates existing members when chosen and reports each row's outcome", async 
       .map((row) => within(row).getAllByRole("cell")[1]?.textContent),
   ).toEqual(["Updated", "Unchanged", "Added", "Duplicate LinkedIn"]);
 
-  // Comes from the merged list cache; the list refresh is still pending.
-  expect(screen.getByText("Staff Engineer")).toBeInTheDocument();
+  expect(screen.queryByText("Staff Engineer")).not.toBeInTheDocument();
   expect(await screen.findByText("Imported notes")).toBeInTheDocument();
 
   await act(async () =>
     refresh.resolve(memberList([changed, untouched, created])),
   );
+  expect(await screen.findByText("Staff Engineer")).toBeInTheDocument();
 });
 
-it("preserves confirmed bulk imports and counts when the list refresh fails", async () => {
+it("preserves import outcomes and marks the last server page stale when refresh fails", async () => {
   const refresh = deferred<MemberListResult>();
   const imported = { ...member, member_id: 2, email: "imported@example.com" };
   vi.mocked(list)
@@ -1726,7 +1778,9 @@ it("preserves confirmed bulk imports and counts when the list refresh fails", as
   } as never);
 
   const queryClient = renderPage();
-  const filteredKey = listQueryKey({ query: { query: "Nobody" } });
+  const filteredKey = listQueryKey({
+    query: { query: "Nobody", page: 1, page_size: 10, roles: "" },
+  });
   const filteredList = { members: [], total: 1 };
   queryClient.setQueryData(filteredKey, filteredList);
   const user = userEvent.setup();
@@ -1747,7 +1801,7 @@ it("preserves confirmed bulk imports and counts when the list refresh fails", as
   await user.click(await screen.findByRole("button", { name: "Import" }));
 
   await screen.findByText("1 added, 1 unchanged, 1 failed");
-  expect(screen.getByText("2 members")).toBeInTheDocument();
+  expect(screen.getByText("1 member")).toBeInTheDocument();
 
   await act(async () => refresh.reject(new Error("List refresh failed")));
   await user.keyboard("{Escape}");
@@ -1755,9 +1809,10 @@ it("preserves confirmed bulk imports and counts when the list refresh fails", as
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
   );
 
-  expect(screen.getByText(imported.email)).toBeInTheDocument();
+  expect(screen.queryByText(imported.email)).not.toBeInTheDocument();
+  expect(screen.getByText("Unable to refresh members")).toBeInTheDocument();
   expect(screen.getAllByText(member.email)).toHaveLength(1);
-  expect(screen.getByText("2 members")).toBeInTheDocument();
+  expect(screen.getByText("1 member")).toBeInTheDocument();
   expect(screen.queryByText("failed@example.com")).not.toBeInTheDocument();
   expect(queryClient.getQueryData(filteredKey)).toEqual(filteredList);
   expect(queryClient.getQueryState(filteredKey)?.isInvalidated).toBe(true);
