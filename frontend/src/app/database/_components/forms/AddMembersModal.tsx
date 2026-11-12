@@ -36,8 +36,8 @@ export default function AddMembersModal({
     submittingRef.current = true;
 
     addMember.mutate(values, {
-      onSuccess: (member) => {
-        onCreated(member);
+      onSuccess: () => {
+        onCreated();
         notifications.show({ message: "Member added.", color: "green" });
         form.reset();
         addMember.reset();

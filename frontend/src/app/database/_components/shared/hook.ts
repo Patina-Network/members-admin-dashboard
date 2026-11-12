@@ -170,8 +170,6 @@ export const useEditMemberForm = (member: MemberDetails) => {
   return { form, changedFields };
 };
 
-export const membersPerPage = 10;
-
 export function useMemberTable() {
   const [searchParams, setSearchParams] = useSearchParams();
   const search = searchParams.get("search") ?? "";

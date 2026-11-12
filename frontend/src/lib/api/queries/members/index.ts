@@ -22,6 +22,8 @@ import {
   update,
 } from "@/lib/api/generated/sdk.gen";
 
+export const membersPerPage = 10;
+
 const membersKey = listQueryKey();
 const uncertainWriteMessage =
   "Could not confirm whether the member was added. Reload the page before trying again.";
@@ -35,7 +37,7 @@ export const useMembersQuery = (
   const params = {
     query: query.trim(),
     page,
-    page_size: 10,
+    page_size: membersPerPage,
     roles: [...roles].sort().join(","),
   };
   return useQuery({
@@ -90,8 +92,11 @@ export const useAddMemberMutation = () => {
   });
 };
 
-async function fetchMembers(query: ListData["query"], signal: AbortSignal) {
-  const result = await list({ ...(query ? { query } : {}), signal });
+async function fetchMembers(
+  query: NonNullable<ListData["query"]>,
+  signal: AbortSignal,
+) {
+  const result = await list({ query, signal });
 
   if (!result.data) {
     throw new Error(result.error?.error ?? "Unable to load members");

@@ -40,11 +40,6 @@ where
 }
 
 pub trait MembersGrpcClient: Clone + Send + Sync + 'static {
-    fn get_member(
-        &mut self,
-        request: Request<members::GetMemberRequest>,
-    ) -> impl Future<Output = Result<Response<members::GetMemberResponse>, Status>> + Send;
-
     fn search_members(
         &mut self,
         request: Request<members::SearchMembersRequest>,
@@ -62,13 +57,6 @@ pub trait MembersGrpcClient: Clone + Send + Sync + 'static {
 }
 
 impl MembersGrpcClient for MembersServiceClient<Channel> {
-    async fn get_member(
-        &mut self,
-        request: Request<members::GetMemberRequest>,
-    ) -> Result<Response<members::GetMemberResponse>, Status> {
-        MembersServiceClient::get_member(self, request).await
-    }
-
     async fn search_members(
         &mut self,
         request: Request<members::SearchMembersRequest>,
@@ -97,11 +85,6 @@ pub trait MembersAdminGrpcClient: Clone + Send + Sync + 'static {
         request: Request<members::GetMemberRequest>,
     ) -> impl Future<Output = Result<Response<admin::GetSensitiveMemberResponse>, Status>> + Send;
 
-    fn list_sensitive_members(
-        &mut self,
-        request: Request<members::ListMembersRequest>,
-    ) -> impl Future<Output = Result<Response<admin::ListSensitiveMembersResponse>, Status>> + Send;
-
     fn create_member(
         &mut self,
         request: Request<admin::CreateMemberRequest>,
@@ -129,13 +112,6 @@ impl MembersAdminGrpcClient for MembersAdminServiceClient<Channel> {
         request: Request<members::GetMemberRequest>,
     ) -> Result<Response<admin::GetSensitiveMemberResponse>, Status> {
         MembersAdminServiceClient::get_sensitive_member(self, request).await
-    }
-
-    async fn list_sensitive_members(
-        &mut self,
-        request: Request<members::ListMembersRequest>,
-    ) -> Result<Response<admin::ListSensitiveMembersResponse>, Status> {
-        MembersAdminServiceClient::list_sensitive_members(self, request).await
     }
 
     async fn create_member(
@@ -179,8 +155,7 @@ pub(crate) mod fake {
         admin::{
             ArchiveMemberRequest, ArchiveMemberResponse, BulkMemberOperationsRequest,
             BulkMemberOperationsResponse, CreateMemberRequest, CreateMemberResponse,
-            GetSensitiveMemberResponse, ListSensitiveMembersResponse, UpdateMemberRequest,
-            UpdateMemberResponse,
+            GetSensitiveMemberResponse, UpdateMemberRequest, UpdateMemberResponse,
         },
     };
     use tonic::{Code, Request, Response, Status};
@@ -254,13 +229,6 @@ pub(crate) mod fake {
             respond(self.get_response.clone(), "get_sensitive_member").await
         }
 
-        async fn list_sensitive_members(
-            &mut self,
-            _: Request<members::ListMembersRequest>,
-        ) -> Result<Response<ListSensitiveMembersResponse>, Status> {
-            panic!("unexpected call to list_sensitive_members")
-        }
-
         async fn create_member(
             &mut self,
             request: Request<CreateMemberRequest>,
@@ -332,13 +300,6 @@ pub(crate) mod fake {
     }
 
     impl MembersGrpcClient for FakeMembers {
-        async fn get_member(
-            &mut self,
-            _: Request<members::GetMemberRequest>,
-        ) -> Result<Response<members::GetMemberResponse>, Status> {
-            panic!("unexpected call to get_member")
-        }
-
         async fn search_members(
             &mut self,
             request: Request<members::SearchMembersRequest>,

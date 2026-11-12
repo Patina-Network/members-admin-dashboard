@@ -19,13 +19,11 @@ import type { Member } from "@/lib/api/generated/types.gen";
 import AddMembersModal from "@/app/database/_components/forms/AddMembersModal";
 import ArchiveMemberModal from "@/app/database/_components/forms/ArchiveMemberModal";
 import EditMemberModal from "@/app/database/_components/forms/EditMemberModal";
-import {
-  membersPerPage,
-  useMemberTable,
-} from "@/app/database/_components/shared/hook";
+import { useMemberTable } from "@/app/database/_components/shared/hook";
 import MembersTableSkeleton from "@/app/database/_components/table/MembersTableSkeleton";
 import MemberTableRow from "@/app/database/_components/table/MemberTableRow";
 import RoleFilter from "@/app/database/_components/table/RoleFilter";
+import { membersPerPage } from "@/lib/api/queries/members";
 
 export default function DatabasePage() {
   const [opened, { open, close }] = useDisclosure(false);
