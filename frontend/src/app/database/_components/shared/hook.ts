@@ -224,8 +224,8 @@ export function useMemberTable() {
     });
   };
 
-  const currentPage = members.data?.page ?? page;
   const pageCount = Math.max(1, members.data?.pages ?? 0);
+  const currentPage = Math.min(members.data?.page ?? page, pageCount);
   const showCreatedMember = () => {
     setSearchParams(
       (current) => {

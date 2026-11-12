@@ -1226,13 +1226,31 @@ describe("member list states", () => {
     });
   });
 
+  it("clamps an out-of-range server page and corrects the URL", async () => {
+    vi.mocked(list).mockResolvedValue({
+      ...memberList([member]),
+      data: { ...memberList([member]).data, page: 9, pages: 2 },
+    });
+    renderPage(false, "/database?page=9");
+    await waitFor(() =>
+      expect(screen.getByLabelText("Current URL")).toHaveTextContent("page=2"),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "2" })).toHaveAttribute(
+        "data-active",
+        "true",
+      ),
+    );
+    expect(screen.queryByRole("button", { name: "9" })).not.toBeInTheDocument();
+  });
+
   it("pages the table and keeps the header on the full count", async () => {
-    const members = Array.from({ length: 11 }, (_, index) => ({
+    const members = Array.from({ length: 40 }, (_, index) => ({
       ...member,
       member_id: index + 1,
       email: `person${index + 1}@example.com`,
     }));
-    mockMemberPages(members, 40);
+    mockMemberPages(members);
 
     renderPage();
     expect(await screen.findByText("40 members")).toBeInTheDocument();
@@ -1243,6 +1261,10 @@ describe("member list states", () => {
     expect(await screen.findByText("person11@example.com")).toBeInTheDocument();
     expect(screen.queryByText("person1@example.com")).not.toBeInTheDocument();
     expect(screen.getByText("40 members")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "4" }));
+    expect(await screen.findByText("person31@example.com")).toBeInTheDocument();
+    expect(screen.getByText("person40@example.com")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "5" })).not.toBeInTheDocument();
   });
 
   it("waits for the complete list instead of inventing a total after creation", async () => {
