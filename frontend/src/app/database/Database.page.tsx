@@ -19,18 +19,17 @@ import type { Member } from "@/lib/api/generated/types.gen";
 import AddMembersModal from "@/app/database/_components/forms/AddMembersModal";
 import ArchiveMemberModal from "@/app/database/_components/forms/ArchiveMemberModal";
 import EditMemberModal from "@/app/database/_components/forms/EditMemberModal";
-import {
-  membersPerPage,
-  useMemberTable,
-} from "@/app/database/_components/shared/hook";
+import { useMemberTable } from "@/app/database/_components/shared/hook";
 import MembersTableSkeleton from "@/app/database/_components/table/MembersTableSkeleton";
 import MemberTableRow from "@/app/database/_components/table/MemberTableRow";
 import RoleFilter from "@/app/database/_components/table/RoleFilter";
+import { membersPerPage } from "@/lib/api/queries/members";
 
 export default function DatabasePage() {
   const [opened, { open, close }] = useDisclosure(false);
   const {
     members,
+    loading,
     search,
     setSearch,
     roles,
@@ -52,10 +51,7 @@ export default function DatabasePage() {
       <Group justify="space-between" mb="md">
         <Box>
           <Title order={2}>Database</Title>
-          <Skeleton
-            visible={members.isPending}
-            width={members.isPending ? 110 : "auto"}
-          >
+          <Skeleton visible={loading} width={loading ? 110 : "auto"}>
             <Text c="dimmed">
               {members.data?.total != null ?
                 `${members.data.total} ${members.data.total === 1 ? "member" : "members"}`
@@ -77,8 +73,8 @@ export default function DatabasePage() {
         </Stack>
       </Group>
       <TextInput
-        label="Search by first name"
-        placeholder="First name"
+        label="Search members"
+        placeholder="Name, email, Discord, Instagram, LinkedIn, or ID"
         type="search"
         size="sm"
         maw={280}
@@ -104,7 +100,7 @@ export default function DatabasePage() {
           : undefined
         }
       />
-      {(hasSearch || roles.length > 0) && members.data && (
+      {(hasSearch || roles.length > 0) && members.data && !loading && (
         <Text size="sm" c="dimmed" mb="sm" role="status">
           {matchingCount}{" "}
           {matchingCount === 1 ? "matching member" : "matching members"}
@@ -174,10 +170,8 @@ export default function DatabasePage() {
               <Table.Th>Actions</Table.Th>
             </Table.Tr>
           </Table.Thead>
-          <Table.Tbody aria-busy={members.isPending}>
-            {members.isPending && (
-              <MembersTableSkeleton rows={membersPerPage} />
-            )}
+          <Table.Tbody aria-busy={loading}>
+            {loading && <MembersTableSkeleton rows={membersPerPage} />}
             {visibleMembers.map((member) => (
               <MemberTableRow
                 key={member.member_id}
@@ -192,7 +186,7 @@ export default function DatabasePage() {
                 onArchive={setArchiving}
               />
             ))}
-            {!members.isPending && matchingCount === 0 && (
+            {!loading && matchingCount === 0 && (
               <Table.Tr>
                 <Table.Td colSpan={8}>
                   <Text fw={500} ta="center">
@@ -212,9 +206,9 @@ export default function DatabasePage() {
       </Table.ScrollContainer>
       <Group justify="center" mt="md">
         <Skeleton
-          visible={members.isPending}
-          height={members.isPending ? 32 : undefined}
-          width={members.isPending ? 180 : "auto"}
+          visible={loading}
+          height={loading ? 32 : undefined}
+          width={loading ? 180 : "auto"}
         >
           <Pagination
             total={pageCount}
@@ -223,7 +217,7 @@ export default function DatabasePage() {
               setPage(value);
               setExpandedId(null);
             }}
-            disabled={members.isPending || pageCount === 1}
+            disabled={loading || pageCount === 1}
           />
         </Skeleton>
       </Group>

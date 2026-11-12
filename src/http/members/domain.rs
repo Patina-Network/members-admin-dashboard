@@ -149,7 +149,13 @@ impl IntoResponse for DetailsResponse {
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct MemberList {
     pub members: Vec<Member>,
-    pub total: usize,
+    pub total: u64,
+    pub matching_total: u64,
+    pub pages: u64,
+    #[serde(rename = "hasNextPage")]
+    pub has_next_page: bool,
+    pub page: u32,
+    pub page_size: u32,
 }
 
 #[derive(utoipa::IntoResponses)]
@@ -211,6 +217,7 @@ impl TryFrom<NewMember> for CreateMemberRequest {
             industry: trim_string(input.industry),
             profile: trim_string(input.profile),
             role: input.role.map(Into::into),
+            ..Default::default()
         })
     }
 }
@@ -373,6 +380,7 @@ impl MemberUpdate {
                 role.map(Into::into)
                     .unwrap_or(members::MemberRole::Unspecified as i32)
             }),
+            ..Default::default()
         };
 
         validate_update_fields(&request)?;

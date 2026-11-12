@@ -40,15 +40,10 @@ where
 }
 
 pub trait MembersGrpcClient: Clone + Send + Sync + 'static {
-    fn get_member(
+    fn search_members(
         &mut self,
-        request: Request<members::GetMemberRequest>,
-    ) -> impl Future<Output = Result<Response<members::GetMemberResponse>, Status>> + Send;
-
-    fn list_members(
-        &mut self,
-        request: Request<members::ListMembersRequest>,
-    ) -> impl Future<Output = Result<Response<members::ListMembersResponse>, Status>> + Send;
+        request: Request<members::SearchMembersRequest>,
+    ) -> impl Future<Output = Result<Response<members::SearchMembersResponse>, Status>> + Send;
 
     fn list_careers(
         &mut self,
@@ -62,18 +57,11 @@ pub trait MembersGrpcClient: Clone + Send + Sync + 'static {
 }
 
 impl MembersGrpcClient for MembersServiceClient<Channel> {
-    async fn get_member(
+    async fn search_members(
         &mut self,
-        request: Request<members::GetMemberRequest>,
-    ) -> Result<Response<members::GetMemberResponse>, Status> {
-        MembersServiceClient::get_member(self, request).await
-    }
-
-    async fn list_members(
-        &mut self,
-        request: Request<members::ListMembersRequest>,
-    ) -> Result<Response<members::ListMembersResponse>, Status> {
-        MembersServiceClient::list_members(self, request).await
+        request: Request<members::SearchMembersRequest>,
+    ) -> Result<Response<members::SearchMembersResponse>, Status> {
+        MembersServiceClient::search_members(self, request).await
     }
 
     async fn list_careers(
@@ -96,11 +84,6 @@ pub trait MembersAdminGrpcClient: Clone + Send + Sync + 'static {
         &mut self,
         request: Request<members::GetMemberRequest>,
     ) -> impl Future<Output = Result<Response<admin::GetSensitiveMemberResponse>, Status>> + Send;
-
-    fn list_sensitive_members(
-        &mut self,
-        request: Request<members::ListMembersRequest>,
-    ) -> impl Future<Output = Result<Response<admin::ListSensitiveMembersResponse>, Status>> + Send;
 
     fn create_member(
         &mut self,
@@ -129,13 +112,6 @@ impl MembersAdminGrpcClient for MembersAdminServiceClient<Channel> {
         request: Request<members::GetMemberRequest>,
     ) -> Result<Response<admin::GetSensitiveMemberResponse>, Status> {
         MembersAdminServiceClient::get_sensitive_member(self, request).await
-    }
-
-    async fn list_sensitive_members(
-        &mut self,
-        request: Request<members::ListMembersRequest>,
-    ) -> Result<Response<admin::ListSensitiveMembersResponse>, Status> {
-        MembersAdminServiceClient::list_sensitive_members(self, request).await
     }
 
     async fn create_member(
@@ -179,8 +155,7 @@ pub(crate) mod fake {
         admin::{
             ArchiveMemberRequest, ArchiveMemberResponse, BulkMemberOperationsRequest,
             BulkMemberOperationsResponse, CreateMemberRequest, CreateMemberResponse,
-            GetSensitiveMemberResponse, ListSensitiveMembersResponse, UpdateMemberRequest,
-            UpdateMemberResponse,
+            GetSensitiveMemberResponse, UpdateMemberRequest, UpdateMemberResponse,
         },
     };
     use tonic::{Code, Request, Response, Status};
@@ -254,13 +229,6 @@ pub(crate) mod fake {
             respond(self.get_response.clone(), "get_sensitive_member").await
         }
 
-        async fn list_sensitive_members(
-            &mut self,
-            _: Request<members::ListMembersRequest>,
-        ) -> Result<Response<ListSensitiveMembersResponse>, Status> {
-            panic!("unexpected call to list_sensitive_members")
-        }
-
         async fn create_member(
             &mut self,
             request: Request<CreateMemberRequest>,
@@ -310,24 +278,10 @@ pub(crate) mod fake {
         }
     }
 
-    /// Fake [`MembersGrpcClient`]. `list_members` returns queued pages in order; requests are recorded.
-    ///
-    /// ```ignore
-    /// let members = FakeMembers::pages([Outcome::Fail(Code::Unavailable)]);
-    ///
-    /// let mut client = members.clone();
-    /// let result = call(timeout, ListMembersRequest::default(), |request| async move {
-    ///     client.list_members(request).await
-    /// })
-    /// .await;
-    ///
-    /// assert!(matches!(result, Err(UpstreamError::Unavailable)));
-    /// assert_eq!(sent(&members.list_requests).len(), 1);
-    /// ```
     #[derive(Clone, Default)]
     pub(crate) struct FakeMembers {
-        pub(crate) list_requests: Arc<Mutex<Vec<members::ListMembersRequest>>>,
-        pub(crate) list_responses: Arc<Mutex<VecDeque<Outcome<members::ListMembersResponse>>>>,
+        pub(crate) search_requests: Arc<Mutex<Vec<members::SearchMembersRequest>>>,
+        pub(crate) search_responses: Arc<Mutex<VecDeque<Outcome<members::SearchMembersResponse>>>>,
         pub(crate) careers_requests: Arc<Mutex<Vec<members::ListCareersRequest>>>,
         pub(crate) careers_response: Outcome<members::ListCareersResponse>,
         pub(crate) industries_requests: Arc<Mutex<Vec<members::ListIndustriesRequest>>>,
@@ -335,40 +289,33 @@ pub(crate) mod fake {
     }
 
     impl FakeMembers {
-        pub(crate) fn pages(
-            pages: impl IntoIterator<Item = Outcome<members::ListMembersResponse>>,
+        pub(crate) fn search_pages(
+            pages: impl IntoIterator<Item = Outcome<members::SearchMembersResponse>>,
         ) -> Self {
             Self {
-                list_responses: Arc::new(Mutex::new(pages.into_iter().collect())),
+                search_responses: Arc::new(Mutex::new(pages.into_iter().collect())),
                 ..Default::default()
             }
         }
     }
 
     impl MembersGrpcClient for FakeMembers {
-        async fn get_member(
+        async fn search_members(
             &mut self,
-            _: Request<members::GetMemberRequest>,
-        ) -> Result<Response<members::GetMemberResponse>, Status> {
-            panic!("unexpected call to get_member")
-        }
-
-        async fn list_members(
-            &mut self,
-            request: Request<members::ListMembersRequest>,
-        ) -> Result<Response<members::ListMembersResponse>, Status> {
-            assert!(request.metadata().contains_key("grpc-timeout"));
-            self.list_requests
+            request: Request<members::SearchMembersRequest>,
+        ) -> Result<Response<members::SearchMembersResponse>, Status> {
+            assert_deadline(&request);
+            self.search_requests
                 .lock()
                 .unwrap()
                 .push(request.into_inner());
             let page = self
-                .list_responses
+                .search_responses
                 .lock()
                 .unwrap()
                 .pop_front()
                 .unwrap_or_default();
-            respond(page, "list_members").await
+            respond(page, "search_members").await
         }
 
         async fn list_careers(

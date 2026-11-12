@@ -31,7 +31,7 @@ rust-embed = "8"
 mime_guess = "2"
 utoipa = { version = "5", features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "9", features = ["axum", "vendored"] }
-members-grpc-service = { version = "=1.0.6-beta.g16bc4a7b", registry = "patina" }
+members-grpc-service = { version = "=1.0.12-beta.g98e89790", registry = "patina" }
 axum-extra = { version = "0.12", features = ["cookie"] }
 jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
 utoipauto = "0.3.1"

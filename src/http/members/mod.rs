@@ -1,19 +1,20 @@
 pub mod domain;
 
-use std::{
-    collections::{BTreeMap, HashSet},
-    time::Duration,
-};
+use std::{collections::BTreeMap, time::Duration};
 
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, State, rejection::JsonRejection},
+    extract::{
+        DefaultBodyLimit, Path, Query, State,
+        rejection::{JsonRejection, QueryRejection},
+    },
     routing::{get, post},
 };
 use members_grpc_service::members::{
     self,
     admin::{BulkMemberOperationsRequest, CreateMemberRequest, SensitiveMember},
 };
+use serde::Deserialize;
 
 use crate::{
     grpc::{self, MembersAdminGrpcClient, MembersGrpcClient, error::UpstreamError},
@@ -259,17 +260,80 @@ pub async fn bulk_import<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
     Ok(Json(BulkResults { results }))
 }
 
-#[utoipa::path(get, path = "/api/members", responses(ListResponse, UpstreamError))]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct MemberListQuery {
+    /// Case-insensitive prefix on name, email, Discord id, Discord username, Instagram, LinkedIn, and member id.
+    #[serde(default)]
+    query: String,
+    #[serde(default = "default_page")]
+    page: u32,
+    #[serde(default = "default_page_size")]
+    page_size: u32,
+    #[serde(default)]
+    roles: String,
+}
+
+fn default_page() -> u32 {
+    1
+}
+fn default_page_size() -> u32 {
+    10
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/members",
+    params(MemberListQuery),
+    responses(ListResponse, UpstreamError)
+)]
 pub async fn list<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
     State(MembersApi {
-        members_grpc_client: client,
+        members_grpc_client: mut client,
         timeout,
         ..
     }): State<MembersApi<MGC, MAGC>>,
+    query: Result<Query<MemberListQuery>, QueryRejection>,
 ) -> Result<ListResponse, UpstreamError> {
-    collect_members(client, timeout)
-        .await
-        .map(ListResponse::Success)
+    let Query(query) = query.map_err(|_| UpstreamError::InvalidArgument)?;
+    if query.page == 0 || !(1..=100).contains(&query.page_size) || query.query.trim().len() > 256 {
+        return Err(UpstreamError::InvalidArgument);
+    }
+    let roles = if query.roles.is_empty() {
+        Vec::new()
+    } else {
+        query
+            .roles
+            .split(',')
+            .map(|role| match role {
+                "board" => Ok(members::MemberRole::Board as i32),
+                "mentor" => Ok(members::MemberRole::Mentor as i32),
+                "mentee" => Ok(members::MemberRole::Mentee as i32),
+                _ => Err(UpstreamError::InvalidArgument),
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let response = grpc::call(
+        GrpcMethod::SearchMembers,
+        timeout,
+        members::SearchMembersRequest {
+            query: query.query.trim().to_owned(),
+            roles,
+            page: query.page,
+            page_size: query.page_size,
+        },
+        |request| async { client.search_members(request).await },
+    )
+    .await?;
+    Ok(ListResponse::Success(MemberList {
+        members: response.members.into_iter().map(Member::from).collect(),
+        total: response.total,
+        matching_total: response.matching_total,
+        pages: response.pages,
+        has_next_page: response.has_next_page,
+        page: response.page,
+        page_size: response.page_size,
+    }))
 }
 
 async fn sensitive_member<MAGC: MembersAdminGrpcClient>(
@@ -290,53 +354,6 @@ async fn sensitive_member<MAGC: MembersAdminGrpcClient>(
     .ok_or(UpstreamError::Failed)
 }
 
-async fn collect_members<MGC: MembersGrpcClient>(
-    client: MGC,
-    timeout: Duration,
-) -> Result<MemberList, UpstreamError> {
-    tokio::time::timeout(timeout, async {
-        let mut members = BTreeMap::new();
-        let mut page_token = String::new();
-        let mut seen = HashSet::new();
-
-        loop {
-            let mut client = client.clone();
-            let response = grpc::call(
-                GrpcMethod::ListMembers,
-                timeout,
-                members::ListMembersRequest {
-                    include_archived: false,
-                    page_size: 100,
-                    page_token,
-                },
-                |request| async { client.list_members(request).await },
-            )
-            .await?;
-
-            for member in response.members {
-                members.insert(member.member_id, Member::from(member));
-            }
-
-            page_token = response.next_page_token;
-            if page_token.is_empty() {
-                break;
-            }
-
-            if !seen.insert(page_token.clone()) {
-                return Err(UpstreamError::Failed);
-            }
-        }
-
-        let members: Vec<_> = members.into_values().collect();
-        Ok(MemberList {
-            total: members.len(),
-            members,
-        })
-    })
-    .await
-    .map_err(|_| UpstreamError::Timeout)?
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -344,8 +361,11 @@ mod tests {
     use axum::{
         Json,
         body::Body,
-        extract::{FromRequest, Path, State, rejection::JsonRejection},
-        http::{Request, StatusCode},
+        extract::{
+            FromRequest, Path, Query, State,
+            rejection::{JsonRejection, QueryRejection},
+        },
+        http::{Request, StatusCode, Uri},
         response::{IntoResponse, Response},
     };
     use http_body_util::BodyExt;
@@ -358,7 +378,7 @@ mod tests {
     };
     use tonic::Code;
 
-    use super::{MemberUpdate, MembersApi, NewMember, collect_members};
+    use super::{MemberUpdate, MembersApi, NewMember};
     use crate::grpc::error::UpstreamError;
     use crate::grpc::fake::{FakeAdmin, FakeMembers, Outcome, sent};
 
@@ -409,8 +429,8 @@ mod tests {
         })
     }
 
-    fn page(ids: &[i32], next_page_token: &str) -> Outcome<members::ListMembersResponse> {
-        Outcome::Reply(members::ListMembersResponse {
+    fn page(ids: &[i32]) -> Outcome<members::SearchMembersResponse> {
+        Outcome::Reply(members::SearchMembersResponse {
             members: ids
                 .iter()
                 .map(|&member_id| members::Member {
@@ -419,7 +439,12 @@ mod tests {
                     ..Default::default()
                 })
                 .collect(),
-            next_page_token: next_page_token.into(),
+            total: ids.len() as u64,
+            matching_total: ids.len() as u64,
+            pages: u64::from(!ids.is_empty()),
+            has_next_page: false,
+            page: 1,
+            page_size: 10,
         })
     }
 
@@ -437,14 +462,34 @@ mod tests {
         (response, admin)
     }
 
-    async fn list_reply(page: Outcome<members::ListMembersResponse>) -> Response {
-        super::list(api_with_timeout(
-            FakeMembers::pages([page]),
-            FakeAdmin::default(),
-            Duration::from_secs(1),
-        ))
+    async fn list_reply(
+        page: Outcome<members::SearchMembersResponse>,
+        query: Result<Query<super::MemberListQuery>, QueryRejection>,
+    ) -> Response {
+        super::list(
+            api_with_timeout(
+                FakeMembers::search_pages([page]),
+                FakeAdmin::default(),
+                Duration::from_secs(1),
+            ),
+            query,
+        )
         .await
         .into_response()
+    }
+
+    fn member_list_query(query: &str) -> Result<Query<super::MemberListQuery>, QueryRejection> {
+        let mut encoded = String::new();
+        for byte in query.bytes() {
+            match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' => {
+                    encoded.push(char::from(byte));
+                }
+                _ => encoded.push_str(&format!("%{byte:02X}")),
+            }
+        }
+        let uri = format!("/api/members?query={encoded}");
+        Query::try_from_uri(&uri.parse::<Uri>().unwrap())
     }
 
     async fn details_reply(admin: FakeAdmin, member_id: i32) -> Response {
@@ -598,7 +643,7 @@ mod tests {
                 create_reply(request_body(VALID_MEMBER).await, Outcome::Fail(code))
                     .await
                     .0,
-                list_reply(Outcome::Fail(code)).await,
+                list_reply(Outcome::Fail(code), member_list_query("")).await,
             ];
 
             for response in responses {
@@ -613,7 +658,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_returns_members_and_total_as_json() {
-        let response = list_reply(page(&[42], "")).await;
+        let response = list_reply(page(&[42]), member_list_query("")).await;
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = json_body(response).await;
@@ -1374,57 +1419,84 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pagination_keeps_unique_members_and_passes_tokens_unchanged() {
-        let client = FakeMembers::pages([page(&[1, 2], "0:2"), page(&[2, 3], "")]);
-
-        let list = collect_members(client.clone(), Duration::from_secs(1))
-            .await
-            .unwrap();
-
-        let requests = sent(&client.list_requests);
-        assert_eq!(requests.len(), 2);
-        for request in &requests {
-            assert!(!request.include_archived);
-            assert_eq!(request.page_size, 100);
-        }
-        assert!(requests[0].page_token.is_empty());
-        assert_eq!(requests[1].page_token, "0:2");
-
-        assert_eq!(list.total, 3);
+    async fn forwards_one_search_page_without_collecting_or_filtering() {
+        let client = FakeMembers::search_pages([Outcome::Reply(members::SearchMembersResponse {
+            members: vec![members::Member {
+                member_id: 42,
+                ..Default::default()
+            }],
+            total: 1000,
+            matching_total: 25,
+            pages: 3,
+            has_next_page: true,
+            page: 2,
+            page_size: 10,
+        })]);
+        let response = super::list(
+            api_with_timeout(client.clone(), FakeAdmin::default(), Duration::from_secs(1)),
+            Query::try_from_uri(
+                &"/api/members?query=%20alice%20&page=2&page_size=10&roles=mentor,board"
+                    .parse::<Uri>()
+                    .unwrap(),
+            ),
+        )
+        .await
+        .unwrap()
+        .into_response();
+        let requests = sent(&client.search_requests);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].query, "alice");
+        assert_eq!(requests[0].page, 2);
+        assert_eq!(requests[0].page_size, 10);
         assert_eq!(
-            list.members
-                .iter()
-                .map(|member| member.member_id)
-                .collect::<Vec<_>>(),
-            [1, 2, 3]
+            requests[0].roles,
+            [
+                members::MemberRole::Mentor as i32,
+                members::MemberRole::Board as i32
+            ]
         );
+        let body = json_body(response).await;
+        assert_eq!(body["members"][0]["member_id"], 42);
+        assert_eq!(body["total"], 1000);
+        assert_eq!(body["matching_total"], 25);
+        assert_eq!(body["pages"], 3);
+        assert_eq!(body["hasNextPage"], true);
+        assert_eq!(body["page"], 2);
     }
 
     #[tokio::test]
-    async fn pagination_rejects_repeated_tokens_and_discards_partial_results() {
-        let client = FakeMembers::pages([page(&[1], "0:2"), page(&[2], "0:2")]);
-
-        let result = collect_members(client, Duration::from_secs(1)).await;
-
-        assert!(matches!(result, Err(UpstreamError::Failed)));
+    async fn rejects_invalid_pagination_before_calling_upstream() {
+        for query in [
+            "page=0",
+            "page=-1",
+            "page_size=0",
+            "page_size=101",
+            "roles=unknown",
+        ] {
+            let client = FakeMembers::default();
+            let result = super::list(
+                api_with_timeout(client.clone(), FakeAdmin::default(), Duration::from_secs(1)),
+                Query::try_from_uri(&format!("/api/members?{query}").parse::<Uri>().unwrap()),
+            )
+            .await;
+            assert!(matches!(result, Err(UpstreamError::InvalidArgument)));
+            assert!(sent(&client.search_requests).is_empty());
+        }
     }
 
     #[tokio::test]
-    async fn pagination_has_a_deadline_even_if_upstream_never_finishes() {
-        let client = FakeMembers::pages([Outcome::Hang]);
-
-        let result = collect_members(client, Duration::from_millis(1)).await;
-
+    async fn paginated_search_obeys_deadline() {
+        let client = FakeMembers::search_pages([Outcome::Hang]);
+        let result = super::list(
+            api_with_timeout(
+                client.clone(),
+                FakeAdmin::default(),
+                Duration::from_millis(1),
+            ),
+            member_list_query(""),
+        )
+        .await;
         assert!(matches!(result, Err(UpstreamError::Timeout)));
-    }
-
-    #[tokio::test]
-    async fn pagination_propagates_upstream_failure_after_a_successful_page() {
-        let client = FakeMembers::pages([page(&[1], "0:1"), Outcome::Fail(Code::Unavailable)]);
-
-        let result = collect_members(client.clone(), Duration::from_secs(1)).await;
-
-        assert_eq!(sent(&client.list_requests).len(), 2);
-        assert!(matches!(result, Err(UpstreamError::Unavailable)));
+        assert_eq!(sent(&client.search_requests).len(), 1);
     }
 }

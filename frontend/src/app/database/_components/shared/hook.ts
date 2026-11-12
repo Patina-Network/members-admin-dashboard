@@ -1,10 +1,7 @@
 import { useForm } from "@mantine/form";
+import { useDebouncedValue } from "@mantine/hooks";
 import { useEffect, useState } from "react";
-import {
-  useLocation,
-  useNavigationType,
-  useSearchParams,
-} from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 
 import type {
   BulkImportPhase,
@@ -14,7 +11,6 @@ import type {
 } from "@/app/database/_components/shared/types";
 import type {
   BulkResult,
-  Member,
   MemberDetails,
   MemberUpdate,
   NewMember,
@@ -174,29 +170,30 @@ export const useEditMemberForm = (member: MemberDetails) => {
   return { form, changedFields };
 };
 
-export const membersPerPage = 10;
-
-/** Keeps member search, role filters, and pagination in the URL without resetting a saved page during loading. */
 export function useMemberTable() {
-  const members = useMembersQuery();
-  const [createdMemberId, setCreatedMemberId] = useState<number | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
-  const location = useLocation();
-  const navigationType = useNavigationType();
-
-  useEffect(() => {
-    if (navigationType === "POP") setCreatedMemberId(null);
-  }, [location.key, navigationType]);
-
   const search = searchParams.get("search") ?? "";
+  const [debouncedSearch] = useDebouncedValue(search, 250);
+  const roles = searchParams.getAll("role").filter(isMemberRole);
+  const requestedPage = Number(searchParams.get("page") ?? 1);
+  const page =
+    (
+      Number.isSafeInteger(requestedPage) &&
+      requestedPage > 0 &&
+      requestedPage <= 4294967295
+    ) ?
+      requestedPage
+    : 1;
+  const searching = search !== debouncedSearch;
+  const members = useMembersQuery(debouncedSearch, page, roles, !searching);
+  const loading = members.isPending || searching;
+
   const setSearch = (value: string) => {
-    setCreatedMemberId(null);
     setSearchParams(
       (current) => {
         const next = new URLSearchParams(current);
         if (value) next.set("search", value);
         else next.delete("search");
-
         next.set("page", "1");
         return next;
       },
@@ -204,18 +201,14 @@ export function useMemberTable() {
     );
   };
 
-  const roles = searchParams.getAll("role").filter(isMemberRole);
   const setRoles = (value: string[]) => {
-    setCreatedMemberId(null);
     setSearchParams(
       (current) => {
         const next = new URLSearchParams(current);
         next.delete("role");
-
         for (const role of value) {
           if (isMemberRole(role)) next.append("role", role);
         }
-
         next.set("page", "1");
         return next;
       },
@@ -223,52 +216,17 @@ export function useMemberTable() {
     );
   };
 
-  const requestedPage = Number(searchParams.get("page") ?? 1);
-  const page =
-    Number.isSafeInteger(requestedPage) && requestedPage > 0 ?
-      requestedPage
-    : 1;
-  const setPage = (nextPage: number) => {
-    setCreatedMemberId(null);
+  const setPage = (value: number) => {
     setSearchParams((current) => {
       const next = new URLSearchParams(current);
-      next.set("page", String(nextPage));
+      next.set("page", String(value));
       return next;
     });
   };
 
-  const allMembers = members.data?.members ?? [];
-  const searchPrefix = search.trim().toLocaleLowerCase();
-  const selectedRoles = new Set(roles);
-
-  const filteredMembers = allMembers.filter((member) => {
-    const nameMatches = member.first_name
-      .toLocaleLowerCase()
-      .startsWith(searchPrefix);
-    const roleMatches =
-      selectedRoles.size === 0 ||
-      (member.role != null && selectedRoles.has(member.role));
-
-    return nameMatches && roleMatches;
-  });
-
-  const pageCount = Math.max(
-    1,
-    Math.ceil(filteredMembers.length / membersPerPage),
-  );
-  const createdIndex =
-    navigationType === "POP" ? -1 : (
-      filteredMembers.findIndex(
-        (member) => member.member_id === createdMemberId,
-      )
-    );
-  const currentPage =
-    createdIndex >= 0 ?
-      Math.floor(createdIndex / membersPerPage) + 1
-    : Math.min(page, pageCount);
-
-  const showCreatedMember = (member: Member) => {
-    setCreatedMemberId(member.member_id);
+  const pageCount = Math.max(1, members.data?.pages ?? 0);
+  const currentPage = Math.min(members.data?.page ?? page, pageCount);
+  const showCreatedMember = () => {
     setSearchParams(
       (current) => {
         const next = new URLSearchParams(current);
@@ -282,12 +240,9 @@ export function useMemberTable() {
   };
 
   useEffect(() => {
-    if (!members.isSuccess || members.isFetching) return;
-    setCreatedMemberId(null);
-
+    if (!members.isSuccess || members.isFetching || searching) return;
     const rawPage = searchParams.get("page");
     if (rawPage === null || rawPage === String(currentPage)) return;
-
     setSearchParams(
       (current) => {
         const next = new URLSearchParams(current);
@@ -297,18 +252,13 @@ export function useMemberTable() {
       { replace: true },
     );
   }, [
-    createdMemberId,
     currentPage,
     members.isSuccess,
     members.isFetching,
+    searching,
     searchParams,
     setSearchParams,
   ]);
-
-  const visibleMembers = filteredMembers.slice(
-    (currentPage - 1) * membersPerPage,
-    currentPage * membersPerPage,
-  );
 
   return {
     members,
@@ -319,10 +269,11 @@ export function useMemberTable() {
     setPage,
     currentPage,
     pageCount,
-    visibleMembers,
-    matchingCount: filteredMembers.length,
-    hasSearch: searchPrefix.length > 0,
+    visibleMembers: loading ? [] : (members.data?.members ?? []),
+    matchingCount: members.data?.matching_total ?? 0,
+    hasSearch: search.trim().length > 0,
     showCreatedMember,
+    loading,
   };
 }
 
