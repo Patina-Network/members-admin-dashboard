@@ -12,7 +12,11 @@ use axum::{
 };
 use members_grpc_service::members::{
     self,
-    admin::{BulkMemberOperationsRequest, CreateMemberRequest, SensitiveMember},
+    admin::{
+        ArchiveMemberRequest, BulkMemberOperationsRequest, CreateMemberRequest, MemberOperation,
+        MemberOperationFailed, SensitiveMember, member_operation::Operation,
+        member_operation_result::Outcome,
+    },
 };
 
 use crate::{
@@ -20,9 +24,9 @@ use crate::{
     metrics::GrpcMethod,
 };
 use domain::{
-    ArchiveResponse, BulkMembers, BulkOutcome, BulkResult, BulkResults, CreateResponse,
-    DetailsResponse, ListResponse, Member, MemberDetails, MemberList, MemberUpdate, NewMember,
-    UpdateResponse,
+    ArchiveFailure, ArchiveMembers, ArchiveResults, BulkMembers, BulkOutcome, BulkResult,
+    BulkResults, CreateResponse, DetailsResponse, ListResponse, Member, MemberDetails, MemberList,
+    MemberUpdate, NewMember, UpdateResponse,
 };
 
 #[derive(Clone)]
@@ -55,11 +59,10 @@ impl<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient> MembersApi<MGC, MAGC>
                 "/members/bulk",
                 post(bulk_import::<MGC, MAGC>).layer(DefaultBodyLimit::max(2 * 1024 * 1024)),
             )
+            .route("/members/archive", post(archive_many::<MGC, MAGC>))
             .route(
                 "/members/{member_id}",
-                get(details::<MGC, MAGC>)
-                    .put(update::<MGC, MAGC>)
-                    .delete(archive::<MGC, MAGC>),
+                get(details::<MGC, MAGC>).put(update::<MGC, MAGC>),
             )
             .with_state(self)
     }
@@ -111,34 +114,65 @@ pub async fn update<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
 }
 
 #[utoipa::path(
-    delete,
-    path = "/api/members/{member_id}",
-    params(("member_id" = i32, Path)),
-    responses(ArchiveResponse, UpstreamError),
+    post,
+    path = "/api/members/archive",
+    request_body = ArchiveMembers,
+    responses((status = 200, body = ArchiveResults), UpstreamError),
 )]
-pub async fn archive<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
+pub async fn archive_many<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
     State(MembersApi {
         members_admin_grpc_client: mut client,
         timeout,
         ..
     }): State<MembersApi<MGC, MAGC>>,
-    Path(member_id): Path<i32>,
-) -> Result<ArchiveResponse, UpstreamError> {
-    if member_id <= 0 {
+    body: Result<Json<ArchiveMembers>, JsonRejection>,
+) -> Result<Json<ArchiveResults>, UpstreamError> {
+    let Json(ArchiveMembers { mut member_ids }) =
+        body.map_err(|_| UpstreamError::InvalidArgument)?;
+
+    member_ids.sort_unstable();
+    member_ids.dedup();
+
+    if member_ids.is_empty() || member_ids.len() > 1000 || member_ids.iter().any(|&id| id <= 0) {
         return Err(UpstreamError::InvalidArgument);
     }
 
-    grpc::call(
-        GrpcMethod::ArchiveMember,
-        timeout,
-        members::admin::ArchiveMemberRequest { member_id },
-        |request| async { client.archive_member(request).await },
-    )
-    .await?
-    .member
-    .ok_or(UpstreamError::Failed)?;
+    let operations = member_ids
+        .iter()
+        .map(|&member_id| MemberOperation {
+            operation: Some(Operation::Archive(ArchiveMemberRequest { member_id })),
+        })
+        .collect();
 
-    Ok(ArchiveResponse::Success)
+    let response = grpc::call(
+        GrpcMethod::BulkMemberOperations,
+        timeout,
+        BulkMemberOperationsRequest { operations },
+        |request| async { client.bulk_member_operations(request).await },
+    )
+    .await?;
+
+    let mut outcomes: BTreeMap<_, _> = response
+        .results
+        .into_iter()
+        .map(|row| (row.index as usize, row.outcome))
+        .collect();
+
+    let mut results = ArchiveResults::default();
+    for (position, member_id) in member_ids.into_iter().enumerate() {
+        match outcomes.remove(&position).flatten() {
+            Some(Outcome::Archived(_) | Outcome::Unchanged(_)) => results.archived.push(member_id),
+            Some(Outcome::Failed(MemberOperationFailed { error })) => {
+                results.failed.push(ArchiveFailure { member_id, error })
+            }
+            _ => results.failed.push(ArchiveFailure {
+                member_id,
+                error: "Could not confirm result. Refresh before retrying.".into(),
+            }),
+        }
+    }
+
+    Ok(Json(results))
 }
 
 #[utoipa::path(
@@ -355,8 +389,8 @@ mod tests {
     use members_grpc_service::members::{
         self,
         admin::{
-            ArchiveMemberResponse, BulkMemberOperationsResponse, CreateMemberResponse,
-            GetSensitiveMemberResponse, SensitiveMember, UpdateMemberResponse,
+            BulkMemberOperationsResponse, CreateMemberResponse, GetSensitiveMemberResponse,
+            SensitiveMember, UpdateMemberResponse,
         },
     };
     use tonic::Code;
@@ -466,12 +500,6 @@ mod tests {
         body: Result<Json<MemberUpdate>, JsonRejection>,
     ) -> Response {
         super::update(api(admin), Path(42), body)
-            .await
-            .into_response()
-    }
-
-    async fn archive_reply(admin: FakeAdmin, member_id: i32) -> Response {
-        super::archive(api(admin), Path(member_id))
             .await
             .into_response()
     }
@@ -979,108 +1007,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn archive_returns_empty_204_for_archived_member() {
-        let admin = FakeAdmin {
-            archive_response: Outcome::Reply(ArchiveMemberResponse {
-                member: Some(sensitive_member()),
-            }),
-            ..Default::default()
-        };
-        let response = archive_reply(admin.clone(), 42).await;
-
-        assert_eq!(sent(&admin.archive_requests)[0].member_id, 42);
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
-        assert!(
-            response
-                .into_body()
-                .collect()
-                .await
-                .unwrap()
-                .to_bytes()
-                .is_empty()
-        );
-    }
-
-    #[tokio::test]
-    async fn archive_maps_rpc_failures_without_leaking_details() {
-        for (archive, status, message) in [
-            (
-                Outcome::Reply(ArchiveMemberResponse { member: None }),
-                StatusCode::BAD_GATEWAY,
-                "upstream request failed",
-            ),
-            (
-                Outcome::Fail(Code::NotFound),
-                StatusCode::NOT_FOUND,
-                "not found",
-            ),
-            (
-                Outcome::Fail(Code::PermissionDenied),
-                StatusCode::FORBIDDEN,
-                "permission denied",
-            ),
-            (
-                Outcome::Fail(Code::Unavailable),
-                StatusCode::SERVICE_UNAVAILABLE,
-                "service unavailable",
-            ),
-            (
-                Outcome::Fail(Code::DeadlineExceeded),
-                StatusCode::GATEWAY_TIMEOUT,
-                "upstream timeout",
-            ),
-        ] {
-            let admin = FakeAdmin {
-                archive_response: archive,
-                ..Default::default()
-            };
-            let response = archive_reply(admin, 42).await;
-
-            assert_eq!(response.status(), status);
-            assert_eq!(
-                json_body(response).await,
-                serde_json::json!({ "error": message })
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn archive_rejects_invalid_ids_without_calling_rpc() {
-        for member_id in [0, -1] {
-            let response = archive_reply(FakeAdmin::default(), member_id).await;
-
-            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-            assert_eq!(
-                json_body(response).await,
-                serde_json::json!({ "error": "invalid request" })
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn archive_enforces_configured_timeout() {
-        let api = api_with_timeout(
-            FakeMembers::default(),
-            FakeAdmin {
-                archive_response: Outcome::Hang,
-                ..Default::default()
-            },
-            Duration::from_millis(50),
-        );
-
-        let response = tokio::time::timeout(Duration::from_secs(2), super::archive(api, Path(42)))
-            .await
-            .expect("archive handler must enforce its timeout")
-            .into_response();
-
-        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
-        assert_eq!(
-            json_body(response).await,
-            serde_json::json!({ "error": "upstream timeout" })
-        );
-    }
-
-    #[tokio::test]
     async fn update_reads_current_version_then_writes_trimmed_changes() {
         let admin = FakeAdmin {
             get_response: current("2020-01-01T00:00:00Z"),
@@ -1140,6 +1066,107 @@ mod tests {
 
             assert_eq!(response.status(), status);
         }
+    }
+
+    #[tokio::test]
+    async fn archive_many_sends_unique_archive_operations_and_reports_each_id() {
+        use members::admin::{
+            MemberArchived, MemberOperationFailed, MemberOperationResult, MemberUnchanged,
+            member_operation::Operation, member_operation_result,
+        };
+
+        let admin = FakeAdmin {
+            bulk_response: Outcome::Reply(BulkMemberOperationsResponse {
+                results: vec![
+                    MemberOperationResult {
+                        index: 0,
+                        outcome: Some(member_operation_result::Outcome::Archived(MemberArchived {
+                            member: Some(sensitive_member()),
+                        })),
+                    },
+                    MemberOperationResult {
+                        index: 1,
+                        outcome: Some(member_operation_result::Outcome::Unchanged(
+                            MemberUnchanged {
+                                member: Some(sensitive_member()),
+                            },
+                        )),
+                    },
+                    MemberOperationResult {
+                        index: 2,
+                        outcome: Some(member_operation_result::Outcome::Failed(
+                            MemberOperationFailed {
+                                error: "NotFound: member not found".into(),
+                            },
+                        )),
+                    },
+                ],
+            }),
+            ..Default::default()
+        };
+        let body =
+            serde_json::from_value(serde_json::json!({ "member_ids": [9, 3, 7, 3, 12] })).unwrap();
+
+        let response = super::archive_many(api(admin.clone()), Ok(Json(body)))
+            .await
+            .into_response();
+
+        let sent_ids: Vec<_> = sent(&admin.bulk_requests)
+            .remove(0)
+            .operations
+            .into_iter()
+            .map(|operation| match operation.operation {
+                Some(Operation::Archive(archive)) => archive.member_id,
+                _ => panic!("expected an archive operation"),
+            })
+            .collect();
+        assert_eq!(sent_ids, [3, 7, 9, 12]);
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            json_body(response).await,
+            serde_json::json!({
+                "archived": [3, 7],
+                "failed": [
+                    { "member_id": 9, "error": "NotFound: member not found" },
+                    { "member_id": 12, "error": "Could not confirm result. Refresh before retrying." },
+                ],
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_many_rejects_invalid_lists_and_maps_upstream_errors() {
+        let too_many: Vec<i32> = (1..=1001).collect();
+        for member_ids in [
+            serde_json::json!([]),
+            serde_json::json!([1, 0]),
+            serde_json::json!([-1]),
+            serde_json::json!(too_many),
+        ] {
+            let admin = FakeAdmin::default();
+            let body =
+                serde_json::from_value(serde_json::json!({ "member_ids": member_ids })).unwrap();
+
+            let response = super::archive_many(api(admin.clone()), Ok(Json(body)))
+                .await
+                .into_response();
+
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert!(sent(&admin.bulk_requests).is_empty());
+        }
+
+        let admin = FakeAdmin {
+            bulk_response: Outcome::Fail(Code::Unavailable),
+            ..Default::default()
+        };
+        let body = serde_json::from_value(serde_json::json!({ "member_ids": [1] })).unwrap();
+
+        let response = super::archive_many(api(admin), Ok(Json(body)))
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     fn bulk_outcome() -> Outcome<BulkMemberOperationsResponse> {

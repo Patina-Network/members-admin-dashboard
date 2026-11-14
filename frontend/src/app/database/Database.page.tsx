@@ -2,6 +2,7 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Group,
   Pagination,
   Skeleton,
@@ -17,7 +18,7 @@ import { useState } from "react";
 import type { Member } from "@/lib/api/generated/types.gen";
 
 import AddMembersModal from "@/app/database/_components/forms/AddMembersModal";
-import ArchiveMemberModal from "@/app/database/_components/forms/ArchiveMemberModal";
+import ArchiveMembersModal from "@/app/database/_components/forms/ArchiveMembersModal";
 import EditMemberModal from "@/app/database/_components/forms/EditMemberModal";
 import {
   membersPerPage,
@@ -45,7 +46,31 @@ export default function DatabasePage() {
   } = useMemberTable();
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [editing, setEditing] = useState<Member | null>(null);
-  const [archiving, setArchiving] = useState<Member | null>(null);
+  const [archivingIds, setArchivingIds] = useState<number[]>([]);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+
+  const allMembers = members.data?.members ?? [];
+  const archivingMembers = allMembers.filter((member) =>
+    archivingIds.includes(member.member_id),
+  );
+  const selectedMembers = allMembers.filter((member) =>
+    selectedIds.has(member.member_id),
+  );
+  const selectedOnPage = visibleMembers.filter((member) =>
+    selectedIds.has(member.member_id),
+  ).length;
+  const pageSelected =
+    visibleMembers.length > 0 && selectedOnPage === visibleMembers.length;
+
+  const select = (targets: Member[], selected: boolean) =>
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      for (const { member_id } of targets) {
+        if (selected) next.add(member_id);
+        else next.delete(member_id);
+      }
+      return next;
+    });
 
   return (
     <>
@@ -122,12 +147,33 @@ export default function DatabasePage() {
           onClose={() => setEditing(null)}
         />
       )}
-      {archiving && (
-        <ArchiveMemberModal
-          key={archiving.member_id}
-          member={archiving}
-          onClose={() => setArchiving(null)}
+      {archivingMembers.length > 0 && (
+        <ArchiveMembersModal
+          members={archivingMembers}
+          onClose={() => setArchivingIds([])}
         />
+      )}
+      {selectedMembers.length > 0 && (
+        <Group mb="sm" gap="sm">
+          <Text size="sm" role="status">
+            {selectedMembers.length}{" "}
+            {selectedMembers.length === 1 ? "member" : "members"} selected
+          </Text>
+          <Button
+            color="red"
+            size="xs"
+            onClick={() => setArchivingIds([...selectedIds])}
+          >
+            Archive All
+          </Button>
+          <Button
+            variant="subtle"
+            size="xs"
+            onClick={() => setSelectedIds(new Set())}
+          >
+            Clear selection
+          </Button>
+        </Group>
       )}
       {members.isError && (
         <Alert
@@ -164,6 +210,17 @@ export default function DatabasePage() {
         <Table striped withRowBorders={false} verticalSpacing="md">
           <Table.Thead>
             <Table.Tr>
+              <Table.Th>
+                <Checkbox
+                  aria-label="Select all members on this page"
+                  checked={pageSelected}
+                  indeterminate={selectedOnPage > 0 && !pageSelected}
+                  disabled={visibleMembers.length === 0}
+                  onChange={(event) =>
+                    select(visibleMembers, event.currentTarget.checked)
+                  }
+                />
+              </Table.Th>
               <Table.Th>ID</Table.Th>
               <Table.Th>Email</Table.Th>
               <Table.Th>First name</Table.Th>
@@ -183,18 +240,20 @@ export default function DatabasePage() {
                 key={member.member_id}
                 member={member}
                 expanded={expandedId === member.member_id}
+                selected={selectedIds.has(member.member_id)}
+                onSelect={(selected) => select([member], selected)}
                 onToggle={() =>
                   setExpandedId((current) =>
                     current === member.member_id ? null : member.member_id,
                   )
                 }
                 onEdit={setEditing}
-                onArchive={setArchiving}
+                onArchive={(target) => setArchivingIds([target.member_id])}
               />
             ))}
             {!members.isPending && matchingCount === 0 && (
               <Table.Tr>
-                <Table.Td colSpan={8}>
+                <Table.Td colSpan={9}>
                   <Text fw={500} ta="center">
                     {members.isError ?
                       "Member list unavailable"

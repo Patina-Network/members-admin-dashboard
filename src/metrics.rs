@@ -27,7 +27,6 @@ pub enum GrpcMethod {
     GetSensitiveMember,
     CreateMember,
     UpdateMember,
-    ArchiveMember,
     BulkMemberOperations,
 }
 

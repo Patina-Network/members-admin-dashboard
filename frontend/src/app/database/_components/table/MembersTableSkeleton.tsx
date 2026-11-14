@@ -5,7 +5,7 @@ export default function MembersTableSkeleton({ rows }: { rows: number }) {
     <>
       {Array.from({ length: rows }, (_, row) => (
         <Table.Tr key={row}>
-          {Array.from({ length: 8 }, (_, column) => (
+          {Array.from({ length: 9 }, (_, column) => (
             <Table.Td key={column}>
               {row === 0 && column === 0 && (
                 <VisuallyHidden role="status">Loading members…</VisuallyHidden>

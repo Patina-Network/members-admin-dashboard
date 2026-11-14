@@ -116,11 +116,6 @@ pub trait MembersAdminGrpcClient: Clone + Send + Sync + 'static {
         &mut self,
         request: Request<admin::BulkMemberOperationsRequest>,
     ) -> impl Future<Output = Result<Response<admin::BulkMemberOperationsResponse>, Status>> + Send;
-
-    fn archive_member(
-        &mut self,
-        request: Request<admin::ArchiveMemberRequest>,
-    ) -> impl Future<Output = Result<Response<admin::ArchiveMemberResponse>, Status>> + Send;
 }
 
 impl MembersAdminGrpcClient for MembersAdminServiceClient<Channel> {
@@ -158,13 +153,6 @@ impl MembersAdminGrpcClient for MembersAdminServiceClient<Channel> {
     ) -> Result<Response<admin::BulkMemberOperationsResponse>, Status> {
         MembersAdminServiceClient::bulk_member_operations(self, request).await
     }
-
-    async fn archive_member(
-        &mut self,
-        request: Request<admin::ArchiveMemberRequest>,
-    ) -> Result<Response<admin::ArchiveMemberResponse>, Status> {
-        MembersAdminServiceClient::archive_member(self, request).await
-    }
 }
 
 #[cfg(test)]
@@ -177,10 +165,9 @@ pub(crate) mod fake {
     use members_grpc_service::members::{
         self,
         admin::{
-            ArchiveMemberRequest, ArchiveMemberResponse, BulkMemberOperationsRequest,
-            BulkMemberOperationsResponse, CreateMemberRequest, CreateMemberResponse,
-            GetSensitiveMemberResponse, ListSensitiveMembersResponse, UpdateMemberRequest,
-            UpdateMemberResponse,
+            BulkMemberOperationsRequest, BulkMemberOperationsResponse, CreateMemberRequest,
+            CreateMemberResponse, GetSensitiveMemberResponse, ListSensitiveMembersResponse,
+            UpdateMemberRequest, UpdateMemberResponse,
         },
     };
     use tonic::{Code, Request, Response, Status};
@@ -217,18 +204,18 @@ pub(crate) mod fake {
     ///
     /// ```ignore
     /// let admin = FakeAdmin {
-    ///     archive_response: Outcome::Reply(ArchiveMemberResponse { member: Some(member) }),
+    ///     create_response: Outcome::Reply(CreateMemberResponse { member: Some(member) }),
     ///     ..Default::default()
     /// };
     ///
     /// let mut client = admin.clone();
-    /// call(timeout, ArchiveMemberRequest { member_id: 42 }, |request| async move {
-    ///     client.archive_member(request).await
+    /// call(method, timeout, create_request, |request| async move {
+    ///     client.create_member(request).await
     /// })
     /// .await
     /// .unwrap();
     ///
-    /// assert_eq!(sent(&admin.archive_requests)[0].member_id, 42);
+    /// assert_eq!(sent(&admin.create_requests).len(), 1);
     /// ```
     #[derive(Clone, Default)]
     pub(crate) struct FakeAdmin {
@@ -240,8 +227,6 @@ pub(crate) mod fake {
         pub(crate) update_response: Outcome<UpdateMemberResponse>,
         pub(crate) bulk_requests: Arc<Mutex<Vec<BulkMemberOperationsRequest>>>,
         pub(crate) bulk_response: Outcome<BulkMemberOperationsResponse>,
-        pub(crate) archive_requests: Arc<Mutex<Vec<ArchiveMemberRequest>>>,
-        pub(crate) archive_response: Outcome<ArchiveMemberResponse>,
     }
 
     impl MembersAdminGrpcClient for FakeAdmin {
@@ -295,18 +280,6 @@ pub(crate) mod fake {
                 .unwrap()
                 .push(request.into_inner());
             respond(self.bulk_response.clone(), "bulk_member_operations").await
-        }
-
-        async fn archive_member(
-            &mut self,
-            request: Request<ArchiveMemberRequest>,
-        ) -> Result<Response<ArchiveMemberResponse>, Status> {
-            assert_deadline(&request);
-            self.archive_requests
-                .lock()
-                .unwrap()
-                .push(request.into_inner());
-            respond(self.archive_response.clone(), "archive_member").await
         }
     }
 
