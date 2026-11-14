@@ -2,6 +2,7 @@ import { Box, Button, SimpleGrid, Table, Text } from "@mantine/core";
 
 import type { MemberTableRowProps } from "@/app/database/_components/shared/types";
 
+import { communicationLabels } from "@/app/database/_components/shared/communicationMethods";
 import { roleLabels } from "@/app/database/_components/shared/memberRoles";
 import { useMemberDetailsQuery } from "@/lib/api/queries/members";
 
@@ -139,6 +140,16 @@ export default function MemberTableRow({
                   Grad date:{" "}
                 </Text>
                 {display(member.grad_date)}
+              </Text>
+              <Text size="sm">
+                <Text span fw={500}>
+                  Preferred communications:{" "}
+                </Text>
+                {display(
+                  member.preferred_communications
+                    ?.map((method) => communicationLabels[method])
+                    .join(", "),
+                )}
               </Text>
             </SimpleGrid>
             <MemberProfile memberId={member.member_id} />

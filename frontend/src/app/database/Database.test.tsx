@@ -100,13 +100,16 @@ function renderPage(
 async function openForm() {
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: "Add" }));
-  await screen.findByLabelText(/^Email/);
+  await screen.findByRole("textbox", { name: /^Email/ });
 
   return user;
 }
 
 async function fillForm(user: ReturnType<typeof userEvent.setup>) {
-  await user.type(screen.getByLabelText(/^Email/), "person@example.com");
+  await user.type(
+    screen.getByRole("textbox", { name: /^Email/ }),
+    "person@example.com",
+  );
   await user.type(screen.getByLabelText(/^First Name/), "First");
   await user.type(screen.getByLabelText(/^Last Name/), "Last");
 }
@@ -162,6 +165,7 @@ beforeEach(() => {
       industry: "Technology",
       school: "Example University",
       grad_date: "Spring 2028",
+      preferred_communications: ["email", "discord"],
       profile: "Existing notes",
       role: "mentor",
     },
@@ -237,6 +241,7 @@ describe("add member", () => {
         industry: null,
         school: null,
         grad_date: null,
+        preferred_communications: null,
         profile: null,
         role: null,
       },
@@ -246,7 +251,9 @@ describe("add member", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "Add" }));
-    expect(await screen.findByLabelText(/^Email/)).toHaveValue("");
+    expect(await screen.findByRole("textbox", { name: /^Email/ })).toHaveValue(
+      "",
+    );
     expect(screen.getByText("Upload Bulk Member(s)")).toBeInTheDocument();
   });
 
@@ -293,6 +300,8 @@ describe("add member", () => {
     );
     await user.type(screen.getByLabelText("School"), " Example University ");
     await user.type(screen.getByLabelText("Grad Date"), " Spring 2028 ");
+    await user.click(screen.getByRole("checkbox", { name: "Discord" }));
+    await user.click(screen.getByRole("checkbox", { name: "LinkedIn" }));
     await user.type(screen.getByLabelText("Profile notes"), " Private notes ");
 
     submitForm();
@@ -306,6 +315,7 @@ describe("add member", () => {
           industry: "Technology",
           school: "Example University",
           grad_date: "Spring 2028",
+          preferred_communications: ["discord", "linked_in"],
           profile: "Private notes",
           role: "mentor",
         }),
@@ -316,7 +326,7 @@ describe("add member", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "Add" }));
-    await screen.findByLabelText(/^Email/);
+    await screen.findByRole("textbox", { name: /^Email/ });
     expect(screen.getByLabelText("LinkedIn Username")).toHaveValue("");
     expect(screen.getByLabelText("Profile notes")).toHaveValue("");
   });
@@ -427,7 +437,7 @@ describe("add member", () => {
     );
 
     await openForm();
-    expect(screen.getByLabelText(/^Email/)).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: /^Email/ })).toBeInTheDocument();
   });
 
   it("validates Discord fields together and rejects future joined dates", async () => {
@@ -496,7 +506,9 @@ describe("add member", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "A member with this email or social account already exists.",
     );
-    expect(screen.getByLabelText(/^Email/)).toHaveValue(member.email);
+    expect(screen.getByRole("textbox", { name: /^Email/ })).toHaveValue(
+      member.email,
+    );
   });
 
   it("blocks same-tick submissions and dismissal until the write finishes", async () => {
@@ -526,7 +538,7 @@ describe("add member", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "Add" }));
-    expect(screen.getByLabelText(/^Email/)).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: /^Email/ })).toBeInTheDocument();
   });
 
   it("does not automatically retry an uncertain write", async () => {
@@ -546,7 +558,9 @@ describe("add member", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Could not confirm whether the member was added",
     );
-    expect(screen.getByLabelText(/^Email/)).toHaveValue(member.email);
+    expect(screen.getByRole("textbox", { name: /^Email/ })).toHaveValue(
+      member.email,
+    );
     expect(create).toHaveBeenCalledTimes(1);
     expect(
       within(screen.getByRole("dialog")).getByRole("button", { name: "Add" }),
@@ -684,7 +698,7 @@ describe("edit member", () => {
     await userEvent.click(
       await screen.findByRole("button", { name: "Edit member 1" }),
     );
-    await screen.findByLabelText(/^Email/);
+    await screen.findByRole("textbox", { name: /^Email/ });
 
     submitForm();
     await waitFor(() =>
@@ -731,7 +745,7 @@ describe("edit member", () => {
     await user.click(
       await screen.findByRole("button", { name: "Edit member 1" }),
     );
-    await screen.findByLabelText(/^Email/);
+    await screen.findByRole("textbox", { name: /^Email/ });
 
     await user.click(
       screen.getByRole("button", { name: /Social & Professional/ }),
@@ -768,8 +782,10 @@ describe("edit member", () => {
       await screen.findByRole("button", { name: "Edit member 1" }),
     );
 
-    await screen.findByLabelText(/^Email/);
-    expect(screen.getByLabelText(/^Email/)).toHaveValue(member.email);
+    await screen.findByRole("textbox", { name: /^Email/ });
+    expect(screen.getByRole("textbox", { name: /^Email/ })).toHaveValue(
+      member.email,
+    );
     expect(screen.getByLabelText(/^First Name/)).toHaveValue("First");
     expect(screen.getByLabelText("Joined At")).toHaveAttribute("readonly");
     expect(screen.getByLabelText("Profile notes")).toHaveValue(
@@ -798,6 +814,9 @@ describe("edit member", () => {
     await user.clear(screen.getByLabelText("School"));
     await user.type(screen.getByLabelText("School"), "Other University");
     await user.clear(screen.getByLabelText("Grad Date"));
+    expect(screen.getByRole("checkbox", { name: "Discord" })).toBeChecked();
+    await user.click(screen.getByRole("checkbox", { name: "Email" }));
+    await user.click(screen.getByRole("checkbox", { name: "Phone Number" }));
     await user.clear(screen.getByLabelText("Profile notes"));
     await user.type(screen.getByLabelText("Profile notes"), "Updated notes");
     await user.selectOptions(screen.getByLabelText("Role"), "board");
@@ -815,6 +834,7 @@ describe("edit member", () => {
           career: "Designer",
           school: "Other University",
           grad_date: null,
+          preferred_communications: ["discord", "phone_number"],
           profile: "Updated notes",
           role: "board",
         },
@@ -837,7 +857,7 @@ describe("edit member", () => {
     await user.click(
       await screen.findByRole("button", { name: "Edit member 1" }),
     );
-    await screen.findByLabelText(/^Email/);
+    await screen.findByRole("textbox", { name: /^Email/ });
 
     await user.click(
       screen.getByRole("button", { name: /Social & Professional/ }),
@@ -882,7 +902,7 @@ describe("edit member", () => {
     await user.click(
       await screen.findByRole("button", { name: "Edit member 1" }),
     );
-    await screen.findByLabelText(/^Email/);
+    await screen.findByRole("textbox", { name: /^Email/ });
 
     await user.clear(screen.getByLabelText(/^First Name/));
     await user.type(screen.getByLabelText(/^First Name/), "Saved");
@@ -910,7 +930,7 @@ describe("edit member", () => {
     await user.click(
       await screen.findByRole("button", { name: "Edit member 1" }),
     );
-    await screen.findByLabelText(/^Email/);
+    await screen.findByRole("textbox", { name: /^Email/ });
 
     await user.clear(screen.getByLabelText(/^First Name/));
     await user.type(screen.getByLabelText(/^First Name/), "Keep this");
@@ -940,7 +960,7 @@ describe("edit member", () => {
     await user.click(
       await screen.findByRole("button", { name: "Edit member 1" }),
     );
-    await screen.findByLabelText(/^Email/);
+    await screen.findByRole("textbox", { name: /^Email/ });
 
     submitForm();
     submitForm();
@@ -963,7 +983,9 @@ describe("edit member", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "already exists",
     );
-    expect(screen.getByLabelText(/^Email/)).toHaveValue(member.email);
+    expect(screen.getByRole("textbox", { name: /^Email/ })).toHaveValue(
+      member.email,
+    );
     expect(update).toHaveBeenCalledTimes(1);
   });
 });
@@ -1020,6 +1042,7 @@ describe("member list states", () => {
           career: "Engineer",
           school: "Example University",
           grad_date: "Spring 2028",
+          preferred_communications: ["email", "linked_in"],
         },
       ]),
     );
@@ -1039,6 +1062,7 @@ describe("member list states", () => {
     expect(screen.getByText("Engineer")).toBeInTheDocument();
     expect(screen.getByText("Example University")).toBeInTheDocument();
     expect(screen.getByText("Spring 2028")).toBeInTheDocument();
+    expect(screen.getByText("Email, LinkedIn")).toBeInTheDocument();
     expect(await screen.findByText("Existing notes")).toBeInTheDocument();
     expect(details).toHaveBeenCalledWith(
       expect.objectContaining({ path: { member_id: 1 } }),

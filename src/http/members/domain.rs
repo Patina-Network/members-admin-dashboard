@@ -49,6 +49,63 @@ impl TryFrom<i32> for MemberRole {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CommunicationMethod {
+    Email,
+    PhoneNumber,
+    Discord,
+    Instagram,
+    LinkedIn,
+}
+
+impl From<CommunicationMethod> for i32 {
+    fn from(method: CommunicationMethod) -> Self {
+        let method = match method {
+            CommunicationMethod::Email => members::CommunicationMethod::Email,
+            CommunicationMethod::PhoneNumber => members::CommunicationMethod::PhoneNumber,
+            CommunicationMethod::Discord => members::CommunicationMethod::Discord,
+            CommunicationMethod::Instagram => members::CommunicationMethod::Instagram,
+            CommunicationMethod::LinkedIn => members::CommunicationMethod::LinkedIn,
+        };
+
+        method as i32
+    }
+}
+
+impl TryFrom<i32> for CommunicationMethod {
+    type Error = ();
+
+    fn try_from(method: i32) -> Result<Self, Self::Error> {
+        match members::CommunicationMethod::try_from(method) {
+            Ok(members::CommunicationMethod::Email) => Ok(Self::Email),
+            Ok(members::CommunicationMethod::PhoneNumber) => Ok(Self::PhoneNumber),
+            Ok(members::CommunicationMethod::Discord) => Ok(Self::Discord),
+            Ok(members::CommunicationMethod::Instagram) => Ok(Self::Instagram),
+            Ok(members::CommunicationMethod::LinkedIn) => Ok(Self::LinkedIn),
+            _ => Err(()),
+        }
+    }
+}
+
+fn stored_preferences(
+    value: Option<members::PreferredCommunications>,
+) -> Option<Vec<CommunicationMethod>> {
+    let methods: Vec<_> = value?
+        .values
+        .into_iter()
+        .filter_map(|method| method.try_into().ok())
+        .collect();
+
+    (!methods.is_empty()).then_some(methods)
+}
+
+fn preferences_request(methods: Vec<CommunicationMethod>) -> members::PreferredCommunications {
+    members::PreferredCommunications {
+        values: methods.into_iter().map(Into::into).collect(),
+    }
+}
+
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct Member {
     pub member_id: i32,
@@ -71,6 +128,8 @@ pub struct Member {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub grad_date: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub preferred_communications: Option<Vec<CommunicationMethod>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<MemberRole>,
 }
 
@@ -90,6 +149,7 @@ impl From<members::Member> for Member {
             industry: value.industry,
             school: value.school,
             grad_date: value.grad_date,
+            preferred_communications: stored_preferences(value.preferred_communications),
             role: value.role.and_then(|role| role.try_into().ok()),
         }
     }
@@ -111,6 +171,7 @@ impl From<SensitiveMember> for Member {
             industry: value.industry,
             school: value.school,
             grad_date: value.grad_date,
+            preferred_communications: stored_preferences(value.preferred_communications),
             role: value.role.and_then(|role| role.try_into().ok()),
         }
     }
@@ -188,6 +249,7 @@ pub struct NewMember {
     pub industry: Option<String>,
     pub school: Option<String>,
     pub grad_date: Option<String>,
+    pub preferred_communications: Option<Vec<CommunicationMethod>>,
     pub profile: Option<String>,
     pub role: Option<MemberRole>,
 }
@@ -221,6 +283,10 @@ impl TryFrom<NewMember> for CreateMemberRequest {
             industry: trim_string(input.industry),
             school: trim_string(input.school),
             grad_date: trim_string(input.grad_date),
+            preferred_communications: input
+                .preferred_communications
+                .filter(|methods| !methods.is_empty())
+                .map(preferences_request),
             profile: trim_string(input.profile),
             role: input.role.map(Into::into),
         })
@@ -346,6 +412,8 @@ pub struct MemberUpdate {
     #[serde(default, deserialize_with = "deserialize_update")]
     pub grad_date: Option<Option<String>>,
     #[serde(default, deserialize_with = "deserialize_update")]
+    pub preferred_communications: Option<Option<Vec<CommunicationMethod>>>,
+    #[serde(default, deserialize_with = "deserialize_update")]
     pub profile: Option<Option<String>>,
     #[serde(default, deserialize_with = "deserialize_update")]
     pub role: Option<Option<MemberRole>>,
@@ -386,6 +454,9 @@ impl MemberUpdate {
             industry: trim_string_or_clear(self.industry),
             school: trim_string_or_clear(self.school),
             grad_date: trim_string_or_clear(self.grad_date),
+            preferred_communications: self
+                .preferred_communications
+                .map(|methods| preferences_request(methods.unwrap_or_default())),
             profile: trim_string_or_clear(self.profile),
             role: self.role.map(|role| {
                 role.map(Into::into)
@@ -570,6 +641,7 @@ mod tests {
             industry: None,
             school: None,
             grad_date: None,
+            preferred_communications: None,
             profile: None,
             role: None,
         }
@@ -614,6 +686,7 @@ mod tests {
             industry: None,
             school: Some(None),
             grad_date: None,
+            preferred_communications: None,
             profile: Some(None),
             role: None,
         };
@@ -655,6 +728,7 @@ mod tests {
                 industry: None,
                 school: None,
                 grad_date: None,
+                preferred_communications: None,
                 profile: None,
                 role: None,
             };
@@ -675,6 +749,7 @@ mod tests {
             industry: None,
             school: None,
             grad_date: None,
+            preferred_communications: None,
             profile: None,
             role: None,
         };
@@ -705,6 +780,7 @@ mod tests {
                 industry: None,
                 school: None,
                 grad_date: None,
+                preferred_communications: None,
                 profile: None,
                 role: None,
             };
@@ -823,6 +899,85 @@ mod tests {
         assert!(request.school.is_none());
         assert!(request.grad_date.is_none());
         assert!(request.profile.is_none());
+    }
+
+    #[test]
+    fn preferred_communications_round_trip_between_json_and_upstream() {
+        use super::CommunicationMethod as Method;
+
+        let all = serde_json::json!(["email", "phone_number", "discord", "instagram", "linked_in"]);
+        let methods: Vec<Method> = serde_json::from_value(all.clone()).unwrap();
+
+        let request = CreateMemberRequest::try_from(NewMember {
+            preferred_communications: Some(methods),
+            ..new_member()
+        })
+        .unwrap();
+        let sent = request.preferred_communications.clone().unwrap();
+        assert_eq!(sent.values, [1, 2, 3, 4, 5]);
+
+        let stored = SensitiveMember {
+            preferred_communications: Some(members::PreferredCommunications {
+                values: vec![1, 2, 3, 4, 5, 0, 99],
+            }),
+            ..Default::default()
+        };
+        let public = serde_json::to_value(Member::from(stored)).unwrap();
+        assert_eq!(public["preferred_communications"], all);
+
+        for empty in [None, Some(members::PreferredCommunications::default())] {
+            let stored = SensitiveMember {
+                preferred_communications: empty,
+                ..Default::default()
+            };
+            let public = serde_json::to_value(Member::from(stored)).unwrap();
+            assert!(public.get("preferred_communications").is_none());
+        }
+
+        let blank = CreateMemberRequest::try_from(NewMember {
+            preferred_communications: Some(vec![]),
+            ..new_member()
+        })
+        .unwrap();
+        assert!(blank.preferred_communications.is_none());
+    }
+
+    #[test]
+    fn update_keeps_clears_or_replaces_preferred_communications() {
+        for (body, expected) in [
+            (serde_json::json!({}), None),
+            (
+                serde_json::json!({ "preferred_communications": null }),
+                Some(vec![]),
+            ),
+            (
+                serde_json::json!({ "preferred_communications": [] }),
+                Some(vec![]),
+            ),
+            (
+                serde_json::json!({ "preferred_communications": ["linked_in", "email"] }),
+                Some(vec![5, 1]),
+            ),
+        ] {
+            let mut input = body;
+            input["expected_updated_at"] = "2020-01-01T00:00:00Z".into();
+            let input: super::MemberUpdate = serde_json::from_value(input).unwrap();
+
+            let request = input.into_request(42).unwrap();
+
+            assert_eq!(
+                request.preferred_communications.map(|sent| sent.values),
+                expected
+            );
+        }
+
+        assert!(
+            serde_json::from_value::<super::MemberUpdate>(serde_json::json!({
+                "expected_updated_at": "2020-01-01T00:00:00Z",
+                "preferred_communications": ["fax"]
+            }))
+            .is_err()
+        );
     }
 
     #[test]

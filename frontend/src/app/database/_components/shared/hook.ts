@@ -49,6 +49,7 @@ const initialValues: MemberFormValues = {
   industry: "",
   school: "",
   gradDate: "",
+  preferredCommunications: [],
   profile: "",
   role: "",
 };
@@ -116,6 +117,10 @@ export const useMemberForm = (
       industry: values.industry.trim() || null,
       school: values.school.trim() || null,
       grad_date: values.gradDate.trim() || null,
+      preferred_communications:
+        values.preferredCommunications.length ?
+          values.preferredCommunications
+        : null,
       profile: values.profile.trim() || null,
       role: values.role || null,
     }),
@@ -145,6 +150,7 @@ export const useEditMemberForm = (member: MemberDetails) => {
       industry: member.industry ?? "",
       school: member.school ?? "",
       gradDate: member.grad_date ?? "",
+      preferredCommunications: member.preferred_communications ?? [],
       profile: member.profile ?? "",
       role: member.role ?? "",
       discordId: member.discord_id ?? "",
@@ -173,6 +179,8 @@ export const useEditMemberForm = (member: MemberDetails) => {
     if (form.isDirty("industry")) body.industry = values.industry;
     if (form.isDirty("school")) body.school = values.school;
     if (form.isDirty("gradDate")) body.grad_date = values.grad_date;
+    if (form.isDirty("preferredCommunications"))
+      body.preferred_communications = values.preferred_communications;
     if (form.isDirty("profile")) body.profile = values.profile;
     if (form.isDirty("role")) body.role = values.role;
 
