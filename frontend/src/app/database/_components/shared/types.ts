@@ -22,6 +22,8 @@ export type MemberFormValues = {
   instagramUsername: string;
   career: string;
   industry: string;
+  school: string;
+  gradDate: string;
   profile: string;
   role: NonNullable<NewMember["role"]> | "";
 };

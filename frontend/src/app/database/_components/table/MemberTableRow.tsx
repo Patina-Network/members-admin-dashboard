@@ -128,6 +128,18 @@ export default function MemberTableRow({
                 </Text>
                 {display(member.industry)}
               </Text>
+              <Text size="sm">
+                <Text span fw={500}>
+                  School:{" "}
+                </Text>
+                {display(member.school)}
+              </Text>
+              <Text size="sm">
+                <Text span fw={500}>
+                  Grad date:{" "}
+                </Text>
+                {display(member.grad_date)}
+              </Text>
             </SimpleGrid>
             <MemberProfile memberId={member.member_id} />
           </Table.Td>

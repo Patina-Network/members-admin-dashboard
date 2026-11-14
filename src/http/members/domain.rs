@@ -67,6 +67,10 @@ pub struct Member {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub industry: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub school: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grad_date: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<MemberRole>,
 }
 
@@ -84,6 +88,8 @@ impl From<members::Member> for Member {
             instagram_username: value.instagram_username,
             career: value.career,
             industry: value.industry,
+            school: value.school,
+            grad_date: value.grad_date,
             role: value.role.and_then(|role| role.try_into().ok()),
         }
     }
@@ -103,6 +109,8 @@ impl From<SensitiveMember> for Member {
             instagram_username: value.instagram_username,
             career: value.career,
             industry: value.industry,
+            school: value.school,
+            grad_date: value.grad_date,
             role: value.role.and_then(|role| role.try_into().ok()),
         }
     }
@@ -178,6 +186,8 @@ pub struct NewMember {
     pub instagram_username: Option<String>,
     pub career: Option<String>,
     pub industry: Option<String>,
+    pub school: Option<String>,
+    pub grad_date: Option<String>,
     pub profile: Option<String>,
     pub role: Option<MemberRole>,
 }
@@ -209,6 +219,8 @@ impl TryFrom<NewMember> for CreateMemberRequest {
             instagram_username: trim_string(input.instagram_username),
             career: trim_string(input.career),
             industry: trim_string(input.industry),
+            school: trim_string(input.school),
+            grad_date: trim_string(input.grad_date),
             profile: trim_string(input.profile),
             role: input.role.map(Into::into),
         })
@@ -330,6 +342,10 @@ pub struct MemberUpdate {
     #[serde(default, deserialize_with = "deserialize_update")]
     pub industry: Option<Option<String>>,
     #[serde(default, deserialize_with = "deserialize_update")]
+    pub school: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_update")]
+    pub grad_date: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_update")]
     pub profile: Option<Option<String>>,
     #[serde(default, deserialize_with = "deserialize_update")]
     pub role: Option<Option<MemberRole>>,
@@ -368,6 +384,8 @@ impl MemberUpdate {
             instagram_username: trim_string_or_clear(self.instagram_username),
             career: trim_string_or_clear(self.career),
             industry: trim_string_or_clear(self.industry),
+            school: trim_string_or_clear(self.school),
+            grad_date: trim_string_or_clear(self.grad_date),
             profile: trim_string_or_clear(self.profile),
             role: self.role.map(|role| {
                 role.map(Into::into)
@@ -550,6 +568,8 @@ mod tests {
             instagram_username: None,
             career: None,
             industry: None,
+            school: None,
+            grad_date: None,
             profile: None,
             role: None,
         }
@@ -561,7 +581,8 @@ mod tests {
         "expected_updated_at": "2020-01-01T00:00:00Z", "email": "person@example.com", "first_name": "First", "last_name": "Last",
         "linkedin_username": " alex ",
         "instagram_username": " alex.photo ", "career": " Engineer ",
-        "industry": " Technology ", "profile": " Private notes ", "role": "board"
+        "industry": " Technology ", "school": " Example University ", "grad_date": " Spring 2028 ",
+        "profile": " Private notes ", "role": "board"
     }))
     .unwrap();
 
@@ -572,6 +593,8 @@ mod tests {
         assert_eq!(request.instagram_username.as_deref(), Some("alex.photo"));
         assert_eq!(request.career.as_deref(), Some("Engineer"));
         assert_eq!(request.industry.as_deref(), Some("Technology"));
+        assert_eq!(request.school.as_deref(), Some("Example University"));
+        assert_eq!(request.grad_date.as_deref(), Some("Spring 2028"));
         assert_eq!(request.profile.as_deref(), Some("Private notes"));
         assert_eq!(request.role, Some(members::MemberRole::Board as i32));
     }
@@ -589,6 +612,8 @@ mod tests {
             instagram_username: None,
             career: None,
             industry: None,
+            school: Some(None),
+            grad_date: None,
             profile: Some(None),
             role: None,
         };
@@ -601,6 +626,8 @@ mod tests {
         assert_eq!(request.discord_username.as_deref(), Some(""));
         assert_eq!(request.profile.as_deref(), Some(""));
         assert_eq!(request.linkedin_username.as_deref(), Some(""));
+        assert_eq!(request.school.as_deref(), Some(""));
+        assert!(request.grad_date.is_none());
         assert!(request.joined_at.is_none());
     }
 
@@ -626,6 +653,8 @@ mod tests {
                 instagram_username: None,
                 career: None,
                 industry: None,
+                school: None,
+                grad_date: None,
                 profile: None,
                 role: None,
             };
@@ -644,6 +673,8 @@ mod tests {
             instagram_username: None,
             career: None,
             industry: None,
+            school: None,
+            grad_date: None,
             profile: None,
             role: None,
         };
@@ -672,6 +703,8 @@ mod tests {
                 instagram_username: None,
                 career: None,
                 industry: None,
+                school: None,
+                grad_date: None,
                 profile: None,
                 role: None,
             };
@@ -744,6 +777,8 @@ mod tests {
             instagram_username: Some(" person.instagram ".into()),
             career: Some(" Engineer ".into()),
             industry: Some(" Technology ".into()),
+            school: Some(" Example University ".into()),
+            grad_date: Some(" Spring 2028 ".into()),
             profile: Some(" Private notes ".into()),
             ..new_member()
         };
@@ -761,6 +796,8 @@ mod tests {
         );
         assert_eq!(request.career.as_deref(), Some("Engineer"));
         assert_eq!(request.industry.as_deref(), Some("Technology"));
+        assert_eq!(request.school.as_deref(), Some("Example University"));
+        assert_eq!(request.grad_date.as_deref(), Some("Spring 2028"));
         assert_eq!(request.profile.as_deref(), Some("Private notes"));
         assert!(request.joined_at.is_none());
     }
@@ -772,6 +809,8 @@ mod tests {
             instagram_username: Some("\t".into()),
             career: Some(" ".into()),
             industry: Some(" ".into()),
+            school: Some(" ".into()),
+            grad_date: Some(" ".into()),
             profile: Some("\n".into()),
             ..new_member()
         };
@@ -781,6 +820,8 @@ mod tests {
         assert!(request.instagram_username.is_none());
         assert!(request.career.is_none());
         assert!(request.industry.is_none());
+        assert!(request.school.is_none());
+        assert!(request.grad_date.is_none());
         assert!(request.profile.is_none());
     }
 
@@ -818,6 +859,8 @@ mod tests {
                 instagram_username: Some("alex.photo".into()),
                 career: Some("Engineer".into()),
                 industry: Some("Technology".into()),
+                school: Some("Example University".into()),
+                grad_date: Some("Spring 2028".into()),
                 profile: Some("Private notes".into()),
                 role,
                 ..Default::default()
@@ -831,6 +874,8 @@ mod tests {
                 "instagram_username",
                 "career",
                 "industry",
+                "school",
+                "grad_date",
                 "role",
             ] {
                 assert_eq!(public.get(field), details.get(field), "{field}");
@@ -840,6 +885,8 @@ mod tests {
             assert_eq!(public["instagram_username"], "alex.photo");
             assert_eq!(public["career"], "Engineer");
             assert_eq!(public["industry"], "Technology");
+            assert_eq!(public["school"], "Example University");
+            assert_eq!(public["grad_date"], "Spring 2028");
             assert_eq!(
                 public.get("role").and_then(|value| value.as_str()),
                 expected

@@ -160,6 +160,8 @@ beforeEach(() => {
       instagram_username: null,
       career: "Engineer",
       industry: "Technology",
+      school: "Example University",
+      grad_date: "Spring 2028",
       profile: "Existing notes",
       role: "mentor",
     },
@@ -233,6 +235,8 @@ describe("add member", () => {
         instagram_username: null,
         career: null,
         industry: null,
+        school: null,
+        grad_date: null,
         profile: null,
         role: null,
       },
@@ -287,6 +291,8 @@ describe("add member", () => {
       screen.getByRole("textbox", { name: "Industry" }),
       " Technology ",
     );
+    await user.type(screen.getByLabelText("School"), " Example University ");
+    await user.type(screen.getByLabelText("Grad Date"), " Spring 2028 ");
     await user.type(screen.getByLabelText("Profile notes"), " Private notes ");
 
     submitForm();
@@ -298,6 +304,8 @@ describe("add member", () => {
           instagram_username: "alex.rivera",
           career: "Engineer",
           industry: "Technology",
+          school: "Example University",
+          grad_date: "Spring 2028",
           profile: "Private notes",
           role: "mentor",
         }),
@@ -786,6 +794,10 @@ describe("edit member", () => {
       screen.getByRole("textbox", { name: "Career" }),
       "Designer",
     );
+    expect(screen.getByLabelText("School")).toHaveValue("Example University");
+    await user.clear(screen.getByLabelText("School"));
+    await user.type(screen.getByLabelText("School"), "Other University");
+    await user.clear(screen.getByLabelText("Grad Date"));
     await user.clear(screen.getByLabelText("Profile notes"));
     await user.type(screen.getByLabelText("Profile notes"), "Updated notes");
     await user.selectOptions(screen.getByLabelText("Role"), "board");
@@ -801,6 +813,8 @@ describe("edit member", () => {
           expected_updated_at: member.updated_at,
           first_name: "Updated",
           career: "Designer",
+          school: "Other University",
+          grad_date: null,
           profile: "Updated notes",
           role: "board",
         },
@@ -1004,6 +1018,8 @@ describe("member list states", () => {
           role: "mentor",
           linkedin_username: "angela",
           career: "Engineer",
+          school: "Example University",
+          grad_date: "Spring 2028",
         },
       ]),
     );
@@ -1021,6 +1037,8 @@ describe("member list states", () => {
     expect(screen.getByText("999")).toBeInTheDocument();
     expect(screen.getByText("angela")).toBeInTheDocument();
     expect(screen.getByText("Engineer")).toBeInTheDocument();
+    expect(screen.getByText("Example University")).toBeInTheDocument();
+    expect(screen.getByText("Spring 2028")).toBeInTheDocument();
     expect(await screen.findByText("Existing notes")).toBeInTheDocument();
     expect(details).toHaveBeenCalledWith(
       expect.objectContaining({ path: { member_id: 1 } }),

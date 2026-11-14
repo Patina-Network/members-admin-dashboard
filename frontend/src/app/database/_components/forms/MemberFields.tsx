@@ -98,6 +98,17 @@ export default function MemberFields({
                 label="Industry"
                 disabled={pending}
               />
+              <TextInput
+                {...form.getInputProps("school")}
+                label="School"
+                disabled={pending}
+              />
+              <TextInput
+                {...form.getInputProps("gradDate")}
+                label="Grad Date"
+                placeholder="e.g. Spring 2028"
+                disabled={pending}
+              />
             </SimpleGrid>
           </Accordion.Panel>
         </Accordion.Item>
