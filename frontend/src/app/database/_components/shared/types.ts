@@ -16,6 +16,7 @@ export type MemberFormValues = {
   email: string;
   firstName: string;
   lastName: string;
+  secondaryEmails: string[];
   joinedAt: string;
   discordId: string;
   discordUsername: string;

@@ -81,6 +81,7 @@ function EditMemberForm({ member, onClose }: EditMemberFormProps) {
               "discordUsername",
               "linkedinUsername",
               "instagramUsername",
+              "secondaryEmails",
             ].some((field) => errors[field])
           )
             setDetails("additional-details");

@@ -154,6 +154,12 @@ export default function MemberTableRow({
                     .join(", "),
                 )}
               </Text>
+              <Text size="sm">
+                <Text span fw={500}>
+                  Secondary Emails:{" "}
+                </Text>
+                {display(member.secondary_emails?.join(", "))}
+              </Text>
             </SimpleGrid>
             <MemberProfile memberId={member.member_id} />
           </Table.Td>

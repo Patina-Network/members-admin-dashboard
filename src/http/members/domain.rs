@@ -106,6 +106,21 @@ fn preferences_request(methods: Vec<CommunicationMethod>) -> members::PreferredC
     }
 }
 
+fn stored_emails(value: Option<members::SecondaryEmails>) -> Option<Vec<String>> {
+    let emails = value?.emails;
+
+    (!emails.is_empty()).then_some(emails)
+}
+
+fn emails_request(emails: Vec<String>) -> members::SecondaryEmails {
+    members::SecondaryEmails {
+        emails: emails
+            .into_iter()
+            .filter_map(|email| trim_string(Some(email)))
+            .collect(),
+    }
+}
+
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct Member {
     pub member_id: i32,
@@ -131,6 +146,8 @@ pub struct Member {
     pub preferred_communications: Option<Vec<CommunicationMethod>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<MemberRole>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secondary_emails: Option<Vec<String>>,
 }
 
 impl From<members::Member> for Member {
@@ -151,6 +168,7 @@ impl From<members::Member> for Member {
             grad_date: value.grad_date,
             preferred_communications: stored_preferences(value.preferred_communications),
             role: value.role.and_then(|role| role.try_into().ok()),
+            secondary_emails: stored_emails(value.secondary_emails),
         }
     }
 }
@@ -173,6 +191,7 @@ impl From<SensitiveMember> for Member {
             grad_date: value.grad_date,
             preferred_communications: stored_preferences(value.preferred_communications),
             role: value.role.and_then(|role| role.try_into().ok()),
+            secondary_emails: stored_emails(value.secondary_emails),
         }
     }
 }
@@ -252,6 +271,7 @@ pub struct NewMember {
     pub preferred_communications: Option<Vec<CommunicationMethod>>,
     pub profile: Option<String>,
     pub role: Option<MemberRole>,
+    pub secondary_emails: Option<Vec<String>>,
 }
 
 impl TryFrom<NewMember> for CreateMemberRequest {
@@ -289,6 +309,10 @@ impl TryFrom<NewMember> for CreateMemberRequest {
                 .map(preferences_request),
             profile: trim_string(input.profile),
             role: input.role.map(Into::into),
+            secondary_emails: input
+                .secondary_emails
+                .map(emails_request)
+                .filter(|list| !list.emails.is_empty()),
         })
     }
 }
@@ -417,6 +441,8 @@ pub struct MemberUpdate {
     pub profile: Option<Option<String>>,
     #[serde(default, deserialize_with = "deserialize_update")]
     pub role: Option<Option<MemberRole>>,
+    #[serde(default, deserialize_with = "deserialize_update")]
+    pub secondary_emails: Option<Option<Vec<String>>>,
 }
 
 pub fn deserialize_update<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
@@ -462,6 +488,9 @@ impl MemberUpdate {
                 role.map(Into::into)
                     .unwrap_or(members::MemberRole::Unspecified as i32)
             }),
+            secondary_emails: self
+                .secondary_emails
+                .map(|emails| emails_request(emails.unwrap_or_default())),
         };
 
         validate_update_fields(&request)?;
@@ -469,19 +498,30 @@ impl MemberUpdate {
     }
 }
 
+fn validate_email(email: &str) -> bool {
+    !email.chars().any(char::is_whitespace)
+        && email.matches('@').count() == 1
+        && email.split_once('@').is_some_and(|(local, domain)| {
+            !local.is_empty()
+                && domain.contains('.')
+                && !domain.starts_with('.')
+                && !domain.ends_with('.')
+        })
+}
+
 pub fn validate_update_fields(
     input: &members::admin::UpdateMemberRequest,
 ) -> Result<(), UpstreamError> {
-    if input.email.as_ref().is_some_and(|email| {
-        email.chars().any(char::is_whitespace)
-            || email.matches('@').count() != 1
-            || !email.split_once('@').is_some_and(|(local, domain)| {
-                !local.is_empty()
-                    && domain.contains('.')
-                    && !domain.starts_with('.')
-                    && !domain.ends_with('.')
-            })
-    }) || input.first_name.as_ref().is_some_and(String::is_empty)
+    if input
+        .email
+        .as_deref()
+        .is_some_and(|email| !validate_email(email))
+        || input
+            .secondary_emails
+            .iter()
+            .flat_map(|list| &list.emails)
+            .any(|email| !validate_email(email))
+        || input.first_name.as_ref().is_some_and(String::is_empty)
         || input.last_name.as_ref().is_some_and(String::is_empty)
     {
         return Err(UpstreamError::InvalidArgument);
@@ -644,6 +684,7 @@ mod tests {
             preferred_communications: None,
             profile: None,
             role: None,
+            secondary_emails: None,
         }
     }
 
@@ -689,6 +730,7 @@ mod tests {
             preferred_communications: None,
             profile: Some(None),
             role: None,
+            secondary_emails: Some(Some(vec!["  ".into(), "  another@example.com  ".into()])),
         };
 
         let request = input.into_request(42).unwrap();
@@ -731,6 +773,7 @@ mod tests {
                 preferred_communications: None,
                 profile: None,
                 role: None,
+                secondary_emails: None,
             };
 
             assert_eq!(input.into_request(1).is_ok(), valid, "{id}");
@@ -752,6 +795,7 @@ mod tests {
             preferred_communications: None,
             profile: None,
             role: None,
+            secondary_emails: None,
         };
 
         assert!(matches!(
@@ -783,6 +827,7 @@ mod tests {
                 preferred_communications: None,
                 profile: None,
                 role: None,
+                secondary_emails: None,
             };
 
             assert!(matches!(
@@ -978,6 +1023,62 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn secondary_emails_round_trip_between_json_and_upstream() {
+        for empty in [None, Some(members::SecondaryEmails::default())] {
+            let stored = SensitiveMember {
+                secondary_emails: empty,
+                ..Default::default()
+            };
+            let public = serde_json::to_value(Member::from(stored)).unwrap();
+            assert!(public.get("secondary_emails").is_none());
+        }
+
+        let stored = SensitiveMember {
+            secondary_emails: Some(members::SecondaryEmails {
+                emails: vec!["a@example.com".into()],
+            }),
+            ..Default::default()
+        };
+        let public = serde_json::to_value(Member::from(stored)).unwrap();
+        assert_eq!(
+            public["secondary_emails"],
+            serde_json::json!(["a@example.com"])
+        );
+
+        for blank in [None, Some(vec![]), Some(vec![" ".into()])] {
+            let request = CreateMemberRequest::try_from(NewMember {
+                secondary_emails: blank,
+                ..new_member()
+            })
+            .unwrap();
+            assert!(request.secondary_emails.is_none());
+        }
+    }
+
+    #[test]
+    fn update_keeps_clears_or_replaces_secondary_emails() {
+        for (body, expected) in [
+            (serde_json::json!({}), None),
+            (
+                serde_json::json!({ "secondary_emails": null }),
+                Some(vec![]),
+            ),
+            (serde_json::json!({ "secondary_emails": [] }), Some(vec![])),
+            (
+                serde_json::json!({ "secondary_emails": [" b@example.com "] }),
+                Some(vec!["b@example.com".to_owned()]),
+            ),
+        ] {
+            let mut input = body;
+            input["expected_updated_at"] = "2020-01-01T00:00:00Z".into();
+            let input: super::MemberUpdate = serde_json::from_value(input).unwrap();
+
+            let request = input.into_request(42).unwrap();
+            assert_eq!(request.secondary_emails.map(|sent| sent.emails), expected);
+        }
     }
 
     #[test]

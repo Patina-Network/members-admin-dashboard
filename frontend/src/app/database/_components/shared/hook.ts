@@ -52,6 +52,7 @@ const initialValues: MemberFormValues = {
   preferredCommunications: [],
   profile: "",
   role: "",
+  secondaryEmails: [],
 };
 
 export const useMemberForm = (
@@ -89,6 +90,18 @@ export const useMemberForm = (
       linkedinUsername: validateSocialUsername,
       instagramUsername: validateSocialUsername,
       email: validateEmail,
+      secondaryEmails: (value, values) => {
+        const seen = new Set([values.email.trim().toLowerCase()]);
+        for (const raw of value) {
+          const email = raw.trim().toLowerCase();
+          if (!email) continue;
+          if (validateEmail(email))
+            return `"${raw.trim()}" is not a valid email`;
+          if (seen.has(email)) return `"${raw.trim()}" is a duplicate`;
+          seen.add(email);
+        }
+        return null;
+      },
       firstName: (value) => (value.trim() ? null : "First name is required"),
       lastName: (value) => (value.trim() ? null : "Last name is required"),
       joinedAt: (value) => {
@@ -107,6 +120,9 @@ export const useMemberForm = (
       email: values.email.trim(),
       first_name: values.firstName.trim(),
       last_name: values.lastName.trim(),
+      secondary_emails: values.secondaryEmails
+        .map((email) => email.trim())
+        .filter(Boolean),
       joined_at:
         values.joinedAt ? new Date(values.joinedAt).toISOString() : null,
       discord_id: values.discordId.trim() || null,
@@ -143,6 +159,7 @@ export const useEditMemberForm = (member: MemberDetails) => {
       email: member.email,
       firstName: member.first_name,
       lastName: member.last_name,
+      secondaryEmails: member.secondary_emails ?? [],
       joinedAt,
       linkedinUsername: member.linkedin_username ?? "",
       instagramUsername: member.instagram_username ?? "",
@@ -165,6 +182,8 @@ export const useEditMemberForm = (member: MemberDetails) => {
     if (form.isDirty("email")) body.email = values.email;
     if (form.isDirty("firstName")) body.first_name = values.first_name;
     if (form.isDirty("lastName")) body.last_name = values.last_name;
+    if (form.isDirty("secondaryEmails"))
+      body.secondary_emails = values.secondary_emails;
 
     if (form.isDirty("discordId") || form.isDirty("discordUsername")) {
       body.discord_id = values.discord_id;

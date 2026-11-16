@@ -83,6 +83,7 @@ export default function AddMembersModal({
                   "instagramUsername",
                   "career",
                   "industry",
+                  "secondaryEmails",
                 ].some((field) => errors[field])
               ) {
                 setDetails("additional-details");
