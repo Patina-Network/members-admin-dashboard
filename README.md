@@ -243,6 +243,7 @@ published member API; no member RPCs are invoked by the setup scaffold.
 | `MEMBERS_ADMIN_SERVICE_GRPC_HOST` | `members-admin-grpc-service:50051` | Upstream host and port |
 | `MEMBERS_ADMIN_SERVICE_GRPC_TLS` | `false` | Enable TLS with native roots |
 | `MEMBERS_ADMIN_SERVICE_GRPC_TIMEOUT_MS` | `3000` | Connection and request timeout |
+| `MEMBERS_ADMIN_SERVICE_GRPC_BULK_IMPORT_TIMEOUT_MS` | `15000` | Bulk member import request timeout |
 | `AZURE_TENANT_ID` | required | Single-tenant Azure directory UUID |
 | `AZURE_CLIENT_ID` | required | Azure Web application client UUID |
 | `AZURE_CLIENT_SECRET` | required | Backend-only client secret |

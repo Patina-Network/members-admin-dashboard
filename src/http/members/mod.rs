@@ -30,6 +30,7 @@ pub struct MembersApi<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient> {
     members_grpc_client: MGC,
     members_admin_grpc_client: MAGC,
     timeout: Duration,
+    members_admin_grpc_bulk_import_timeout: Duration,
 }
 
 impl<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient> MembersApi<MGC, MAGC> {
@@ -37,11 +38,13 @@ impl<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient> MembersApi<MGC, MAGC>
         members_grpc_client: MGC,
         members_admin_grpc_client: MAGC,
         timeout: Duration,
+        members_admin_grpc_bulk_import_timeout: Duration,
     ) -> Self {
         Self {
             members_grpc_client,
             members_admin_grpc_client,
             timeout,
+            members_admin_grpc_bulk_import_timeout,
         }
     }
 
@@ -198,7 +201,7 @@ pub async fn create<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
 pub async fn bulk_import<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
     State(MembersApi {
         members_admin_grpc_client: mut client,
-        timeout,
+        members_admin_grpc_bulk_import_timeout,
         ..
     }): State<MembersApi<MGC, MAGC>>,
     body: Result<Json<BulkMembers>, JsonRejection>,
@@ -231,7 +234,7 @@ pub async fn bulk_import<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
     if !operations.is_empty() {
         let response = grpc::call(
             GrpcMethod::BulkMemberOperations,
-            timeout,
+            members_admin_grpc_bulk_import_timeout,
             BulkMemberOperationsRequest { operations },
             |request| async { client.bulk_member_operations(request).await },
         )
@@ -365,7 +368,12 @@ mod tests {
     type Api = State<MembersApi<FakeMembers, FakeAdmin>>;
 
     fn api_with_timeout(members: FakeMembers, admin: FakeAdmin, timeout: Duration) -> Api {
-        State(MembersApi::new(members, admin, timeout))
+        State(MembersApi::new(
+            members,
+            admin,
+            timeout,
+            Duration::from_secs(15),
+        ))
     }
 
     fn api(admin: FakeAdmin) -> Api {
@@ -1317,6 +1325,7 @@ mod tests {
             FakeMembers::default(),
             admin.clone(),
             Duration::from_secs(1),
+            Duration::from_secs(15),
         )
         .router::<()>();
         let body = serde_json::json!({ "mode": "replace", "members": [
@@ -1350,6 +1359,7 @@ mod tests {
                 ..Default::default()
             },
             Duration::from_secs(1),
+            Duration::from_secs(15),
         )
         .router::<()>();
         let body = serde_json::json!({ "members": [

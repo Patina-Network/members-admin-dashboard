@@ -12,6 +12,7 @@ pub struct Config {
     pub members_admin_service_grpc_host: String,
     pub members_admin_service_grpc_tls: bool,
     pub members_admin_service_grpc_timeout: Duration,
+    pub memberd_admin_service_grpc_bulk_import_timeout: Duration,
     pub http_port: u16,
     pub enable_documentation: bool,
     pub version: Option<String>,
@@ -26,6 +27,7 @@ impl Config {
             members_admin_service_grpc_host = %self.members_admin_service_grpc_host,
             members_admin_service_grpc_tls = self.members_admin_service_grpc_tls,
             members_admin_service_grpc_timeout = ?self.members_admin_service_grpc_timeout,
+            memberd_admin_service_grpc_bulk_import_timeout = ?self.memberd_admin_service_grpc_bulk_import_timeout,
             http_port = self.http_port,
             enable_documentation = self.enable_documentation,
             version = %self.version.clone().unwrap_or_else(|| "N/A".into()),
@@ -52,6 +54,12 @@ impl Config {
                     .ok()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(3000),
+            ),
+            memberd_admin_service_grpc_bulk_import_timeout: Duration::from_millis(
+                env::var("MEMBERS_ADMIN_SERVICE_GRPC_BULK_IMPORT_TIMEOUT_MS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(15000),
             ),
             http_port: env::var("HTTP_PORT")
                 .ok()
@@ -87,8 +95,10 @@ impl Config {
             "{scheme}://{}",
             self.members_admin_service_grpc_host
         ))?
-        .connect_timeout(self.members_admin_service_grpc_timeout)
-        .timeout(self.members_admin_service_grpc_timeout);
+        // No channel-level `.timeout()`: it would cap every request's grpc-timeout
+        // header (set per-call in `grpc::call`) to this value, including the longer
+        // bulk import timeout.
+        .connect_timeout(self.members_admin_service_grpc_timeout);
 
         if !self.members_admin_service_grpc_tls {
             return Ok(endpoint);
@@ -265,4 +275,117 @@ fn is_uuid(value: &str) -> bool {
                 c.is_ascii_hexdigit()
             }
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use members_grpc_service::members::{
+        self,
+        admin::{
+            self, BulkMemberOperationsResponse,
+            members_admin_service_client::MembersAdminServiceClient,
+            members_admin_service_server::{MembersAdminService, MembersAdminServiceServer},
+        },
+    };
+    use tokio::net::TcpListener;
+    use tokio_stream::wrappers::TcpListenerStream;
+    use tonic::{Request, Response, Status, async_trait, transport::Server};
+
+    use super::Config;
+    use crate::{grpc, metrics::GrpcMethod};
+
+    /// Real [`MembersAdminService`] that sleeps before replying to bulk imports;
+    /// every other RPC is unused by this test.
+    struct DelayedAdmin {
+        delay: Duration,
+    }
+
+    #[async_trait]
+    impl MembersAdminService for DelayedAdmin {
+        async fn get_sensitive_member(
+            &self,
+            _: Request<members::GetMemberRequest>,
+        ) -> Result<Response<admin::GetSensitiveMemberResponse>, Status> {
+            unimplemented!()
+        }
+
+        async fn list_sensitive_members(
+            &self,
+            _: Request<members::ListMembersRequest>,
+        ) -> Result<Response<admin::ListSensitiveMembersResponse>, Status> {
+            unimplemented!()
+        }
+
+        async fn create_member(
+            &self,
+            _: Request<admin::CreateMemberRequest>,
+        ) -> Result<Response<admin::CreateMemberResponse>, Status> {
+            unimplemented!()
+        }
+
+        async fn update_member(
+            &self,
+            _: Request<admin::UpdateMemberRequest>,
+        ) -> Result<Response<admin::UpdateMemberResponse>, Status> {
+            unimplemented!()
+        }
+
+        async fn archive_member(
+            &self,
+            _: Request<admin::ArchiveMemberRequest>,
+        ) -> Result<Response<admin::ArchiveMemberResponse>, Status> {
+            unimplemented!()
+        }
+
+        async fn bulk_member_operations(
+            &self,
+            _: Request<admin::BulkMemberOperationsRequest>,
+        ) -> Result<Response<BulkMemberOperationsResponse>, Status> {
+            tokio::time::sleep(self.delay).await;
+            Ok(Response::new(BulkMemberOperationsResponse {
+                results: vec![],
+            }))
+        }
+    }
+
+    /// Exercises the real tonic channel built by [`Config::grpc_endpoint`]: the
+    /// general timeout must not cap the longer bulk import timeout, since both are
+    /// carried per-request as the `grpc-timeout` header rather than on the channel.
+    #[tokio::test]
+    async fn bulk_import_timeout_is_not_capped_by_the_general_channel_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let delay = Duration::from_millis(300);
+
+        tokio::spawn(
+            Server::builder()
+                .add_service(MembersAdminServiceServer::new(DelayedAdmin { delay }))
+                .serve_with_incoming(TcpListenerStream::new(listener)),
+        );
+
+        let config = Config {
+            members_admin_service_grpc_host: addr.to_string(),
+            members_admin_service_grpc_timeout: Duration::from_millis(50),
+            memberd_admin_service_grpc_bulk_import_timeout: delay * 3,
+            ..crate::http::state::test_state().config
+        };
+
+        let channel = config.grpc_endpoint().unwrap().connect().await.unwrap();
+        let mut client = MembersAdminServiceClient::new(channel);
+
+        let result = grpc::call(
+            GrpcMethod::BulkMemberOperations,
+            config.memberd_admin_service_grpc_bulk_import_timeout,
+            admin::BulkMemberOperationsRequest { operations: vec![] },
+            |request| async move { client.bulk_member_operations(request).await },
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "bulk import must keep its own longer timeout, not the general one: {result:?}"
+        );
+    }
 }
