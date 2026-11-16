@@ -64,6 +64,7 @@ async fn main() -> anyhow::Result<()> {
             members_grpc_client.clone(),
             members_admin_grpc_client,
             timeout,
+            config.memberd_admin_service_grpc_bulk_import_timeout,
         ),
         SuggestionsApi::new(members_grpc_client, timeout),
     );

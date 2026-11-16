@@ -33,6 +33,7 @@ pub(crate) fn test_state() -> AppState {
             members_admin_service_grpc_host: "localhost:50051".into(),
             members_admin_service_grpc_tls: false,
             members_admin_service_grpc_timeout: std::time::Duration::from_secs(3),
+            memberd_admin_service_grpc_bulk_import_timeout: std::time::Duration::from_secs(15),
             http_port: 8080,
             enable_documentation: true,
             version: None,
@@ -58,7 +59,12 @@ pub(crate) fn test_app() -> axum::Router {
     crate::http::app(
         test_state(),
         test_auth(),
-        MembersApi::new(FakeMembers::default(), FakeAdmin::default(), timeout),
+        MembersApi::new(
+            FakeMembers::default(),
+            FakeAdmin::default(),
+            timeout,
+            std::time::Duration::from_secs(15),
+        ),
         SuggestionsApi::new(FakeMembers::default(), timeout),
     )
 }
