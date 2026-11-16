@@ -13,6 +13,7 @@ import type { BulkMembersProps } from "@/app/database/_components/shared/types";
 
 import CsvUpload from "@/app/database/_components/import/CsvUpload";
 import { useBulkImport } from "@/app/database/_components/shared/hook";
+import { EMPTY_ON_UI } from "@/lib/const";
 
 export default function BulkMembers({ onBack, onPending }: BulkMembersProps) {
   const bulk = useBulkImport(onPending);
@@ -104,7 +105,7 @@ export default function BulkMembers({ onBack, onPending }: BulkMembersProps) {
                             lineClamp={2}
                             title={member[column] ?? undefined}
                           >
-                            {member[column] || "—"}
+                            {member[column] || EMPTY_ON_UI}
                           </Text>
                         </Table.Td>
                       ))}
