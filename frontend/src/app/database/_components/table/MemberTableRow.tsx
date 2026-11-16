@@ -5,9 +5,10 @@ import type { MemberTableRowProps } from "@/app/database/_components/shared/type
 import { communicationLabels } from "@/app/database/_components/shared/communicationMethods";
 import { roleLabels } from "@/app/database/_components/shared/memberRoles";
 import { useMemberDetailsQuery } from "@/lib/api/queries/members";
+import { EMPTY_ON_UI } from "@/lib/const";
 
 function display(value: string | null | undefined) {
-  return value || "—";
+  return value || EMPTY_ON_UI;
 }
 
 function MemberProfile({ memberId }: { memberId: number }) {
@@ -50,7 +51,9 @@ export default function MemberTableRow({
         <Table.Td>{member.first_name}</Table.Td>
         <Table.Td>{member.last_name}</Table.Td>
         <Table.Td>{display(member.discord_username)}</Table.Td>
-        <Table.Td>{member.role ? roleLabels[member.role] : "—"}</Table.Td>
+        <Table.Td>
+          {member.role ? roleLabels[member.role] : EMPTY_ON_UI}
+        </Table.Td>
         <Table.Td>
           <Button
             variant="subtle"
@@ -97,7 +100,7 @@ export default function MemberTableRow({
                 </Text>
                 {member.joined_at ?
                   new Date(member.joined_at).toLocaleString()
-                : "—"}
+                : EMPTY_ON_UI}
               </Text>
               <Text size="sm">
                 <Text span fw={500}>
