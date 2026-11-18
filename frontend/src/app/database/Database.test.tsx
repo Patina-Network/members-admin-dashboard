@@ -244,6 +244,7 @@ describe("add member", () => {
         preferred_communications: null,
         profile: null,
         role: null,
+        secondary_emails: [],
       },
     });
     await waitFor(() =>

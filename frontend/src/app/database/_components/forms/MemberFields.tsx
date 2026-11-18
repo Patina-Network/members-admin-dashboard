@@ -1,12 +1,17 @@
 import {
   Accordion,
+  ActionIcon,
+  Button,
   Checkbox,
   Group,
+  Input,
   NativeSelect,
   SimpleGrid,
+  Stack,
   TextInput,
   Textarea,
 } from "@mantine/core";
+import { IconX } from "@tabler/icons-react";
 
 import type { MemberFieldsProps } from "@/app/database/_components/shared/types";
 
@@ -112,6 +117,45 @@ export default function MemberFields({
                 placeholder="e.g. Spring 2028"
                 disabled={pending}
               />
+              <Stack gap="xs" style={{ gridColumn: "1 / -1" }}>
+                <Input.Label>Secondary Emails</Input.Label>
+                {form.values.secondaryEmails.map((_, index) => (
+                  <Group key={index} gap="xs" wrap="nowrap">
+                    <TextInput
+                      {...form.getInputProps(`secondaryEmails.${index}`, {
+                        withError: false,
+                      })}
+                      aria-label={`Secondary email ${index + 1}`}
+                      type="email"
+                      disabled={pending}
+                      style={{ flex: 1 }}
+                    />
+                    <ActionIcon
+                      variant="subtle"
+                      color="red"
+                      aria-label={`Remove secondary email ${index + 1}`}
+                      disabled={pending}
+                      onClick={() =>
+                        form.removeListItem("secondaryEmails", index)
+                      }
+                    >
+                      <IconX size={16} />
+                    </ActionIcon>
+                  </Group>
+                ))}
+                {form.errors.secondaryEmails && (
+                  <Input.Error>{form.errors.secondaryEmails}</Input.Error>
+                )}
+                <Button
+                  variant="subtle"
+                  size="xs"
+                  w="fit-content"
+                  disabled={pending}
+                  onClick={() => form.insertListItem("secondaryEmails", "")}
+                >
+                  Add secondary email
+                </Button>
+              </Stack>
             </SimpleGrid>
             <Checkbox.Group
               {...form.getInputProps("preferredCommunications")}

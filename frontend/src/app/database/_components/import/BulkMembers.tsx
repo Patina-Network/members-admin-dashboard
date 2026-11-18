@@ -97,18 +97,23 @@ export default function BulkMembers({ onBack, onPending }: BulkMembersProps) {
                           {label}
                         </Text>
                       </Table.Td>
-                      {bulk.previewColumns.map((column) => (
-                        <Table.Td key={column}>
-                          <Text
-                            size="sm"
-                            maw={240}
-                            lineClamp={2}
-                            title={member[column] ?? undefined}
-                          >
-                            {member[column] || EMPTY_ON_UI}
-                          </Text>
-                        </Table.Td>
-                      ))}
+                      {bulk.previewColumns.map((column) => {
+                        const value = member[column];
+                        const text =
+                          Array.isArray(value) ? value.join(", ") : value;
+                        return (
+                          <Table.Td key={column}>
+                            <Text
+                              size="sm"
+                              maw={240}
+                              lineClamp={2}
+                              title={text ?? undefined}
+                            >
+                              {member[column] || EMPTY_ON_UI}
+                            </Text>
+                          </Table.Td>
+                        );
+                      })}
                     </Table.Tr>
                   );
                 })}

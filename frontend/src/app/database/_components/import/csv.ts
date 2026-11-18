@@ -27,6 +27,7 @@ export const columns = [
   "grad_date",
   "profile",
   "role",
+  "secondary_emails",
 ] as const;
 
 export const requiredColumns = columns.slice(0, 3);
@@ -135,6 +136,21 @@ export function parseMembersCsv(text: string): CsvMemberRow[] {
     if (member.role && !isMemberRole(member.role))
       fail("role must be board, mentor, or mentee.");
 
+    if (member.secondary_emails) {
+      const rawSecondaryEmails = member.secondary_emails as unknown as
+        string | null;
+      const secondaryEmails = (rawSecondaryEmails ?? "")
+        .split(";")
+        .map((email) => email.trim())
+        .filter(Boolean);
+
+      for (const email of secondaryEmails) {
+        if (validateEmail(email))
+          fail(`secondary_emails: "${email}" is not a valid email`);
+      }
+
+      member.secondary_emails = secondaryEmails.length ? secondaryEmails : null;
+    }
     return { sourceRow, member };
   });
 
