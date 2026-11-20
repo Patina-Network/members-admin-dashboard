@@ -17,6 +17,7 @@ import { useArchiveMembersMutation } from "@/lib/api/queries/members";
 
 export default function ArchiveMembersModal({
   members,
+  onArchived,
   onClose,
 }: ArchiveMembersModalProps) {
   const archive = useArchiveMembersMutation();
@@ -105,11 +106,13 @@ export default function ArchiveMembersModal({
                 members.map((member) => member.member_id),
                 {
                   onSuccess: ({ archived, failed }) => {
-                    if (archived.length)
+                    if (archived.length) {
+                      onArchived(archived);
                       notifications.show({
                         message: `${count(archived.length)} archived.`,
                         color: "green",
                       });
+                    }
                     if (!failed.length) onClose();
                   },
                   onSettled: () => {

@@ -1316,7 +1316,7 @@ describe("archive members", () => {
     await screen.findByText("person1@example.com");
 
     expect(
-      screen.queryByRole("button", { name: "Archive All" }),
+      screen.queryByRole("button", { name: "Archive selected" }),
     ).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("checkbox", { name: "Select member 2" }));
@@ -1342,7 +1342,7 @@ describe("archive members", () => {
       screen.getByRole("checkbox", { name: "Select member 1" }),
     ).not.toBeChecked();
 
-    await user.click(screen.getByRole("button", { name: "Archive All" }));
+    await user.click(screen.getByRole("button", { name: "Archive selected" }));
     const dialog = within(screen.getByRole("dialog"));
     expect(
       dialog
@@ -1362,7 +1362,7 @@ describe("archive members", () => {
     );
     expect(screen.getByText("3 members selected")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Archive All" }));
+    await user.click(screen.getByRole("button", { name: "Archive selected" }));
     vi.mocked(list).mockResolvedValue(
       memberList(
         members.filter(({ member_id }) => ![2, 11, 12].includes(member_id)),
@@ -1380,8 +1380,28 @@ describe("archive members", () => {
     expect(screen.getByText("9 members")).toBeInTheDocument();
     expect(screen.queryByText("person2@example.com")).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Archive All" }),
+      screen.queryByRole("button", { name: "Archive selected" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("shows how many selected members are hidden by filters", async () => {
+    vi.mocked(list).mockResolvedValue(memberList(members));
+
+    renderPage();
+    const user = userEvent.setup();
+    await screen.findByText("person1@example.com");
+
+    await user.click(screen.getByRole("checkbox", { name: "Select member 1" }));
+    await user.click(screen.getByRole("checkbox", { name: "Select member 2" }));
+    expect(screen.getByText("2 members selected")).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Search by first name"), "First2");
+    expect(
+      screen.getByText("2 members selected (1 hidden by filters)"),
+    ).toBeInTheDocument();
+
+    await user.clear(screen.getByLabelText("Search by first name"));
+    expect(screen.getByText("2 members selected")).toBeInTheDocument();
   });
 
   it("deselects rows, a whole page, and everything", async () => {
@@ -1412,7 +1432,7 @@ describe("archive members", () => {
       screen.getByRole("checkbox", { name: "Select member 1" }),
     ).not.toBeChecked();
     expect(
-      screen.queryByRole("button", { name: "Archive All" }),
+      screen.queryByRole("button", { name: "Archive selected" }),
     ).not.toBeInTheDocument();
   });
 
@@ -1428,7 +1448,7 @@ describe("archive members", () => {
 
     await user.click(screen.getByRole("checkbox", { name: "Select member 1" }));
     await user.click(screen.getByRole("checkbox", { name: "Select member 2" }));
-    await user.click(screen.getByRole("button", { name: "Archive All" }));
+    await user.click(screen.getByRole("button", { name: "Archive selected" }));
 
     vi.mocked(list).mockResolvedValue(memberList(members.slice(1)));
     await user.click(screen.getByRole("button", { name: "Confirm" }));
@@ -1458,7 +1478,7 @@ describe("archive members", () => {
     await screen.findByText("person1@example.com");
 
     await user.click(screen.getByRole("checkbox", { name: "Select member 1" }));
-    await user.click(screen.getByRole("button", { name: "Archive All" }));
+    await user.click(screen.getByRole("button", { name: "Archive selected" }));
 
     const confirm = screen.getByRole("button", { name: "Confirm" });
     fireEvent.click(confirm);

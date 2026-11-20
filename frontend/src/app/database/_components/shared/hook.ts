@@ -355,6 +355,7 @@ export function useMemberTable() {
     currentPage,
     pageCount,
     visibleMembers,
+    matchingMembers: filteredMembers,
     matchingCount: filteredMembers.length,
     hasSearch: searchPrefix.length > 0,
     showCreatedMember,

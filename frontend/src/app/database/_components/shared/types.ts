@@ -51,6 +51,7 @@ export type MemberFieldsProps = {
 
 export type ArchiveMembersModalProps = {
   members: Member[];
+  onArchived: (memberIds: number[]) => void;
   onClose: () => void;
 };
 

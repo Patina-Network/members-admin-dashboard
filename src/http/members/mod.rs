@@ -13,8 +13,8 @@ use axum::{
 use members_grpc_service::members::{
     self,
     admin::{
-        ArchiveMemberRequest, BulkMemberOperationsRequest, CreateMemberRequest, MemberOperation,
-        MemberOperationFailed, SensitiveMember, member_operation::Operation,
+        ArchiveMemberRequest, BulkMemberOperationsRequest, CreateMemberRequest, MemberArchived,
+        MemberOperation, MemberOperationFailed, SensitiveMember, member_operation::Operation,
         member_operation_result::Outcome,
     },
 };
@@ -122,7 +122,7 @@ pub async fn update<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
 pub async fn archive_many<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
     State(MembersApi {
         members_admin_grpc_client: mut client,
-        timeout,
+        members_admin_grpc_bulk_import_timeout,
         ..
     }): State<MembersApi<MGC, MAGC>>,
     body: Result<Json<ArchiveMembers>, JsonRejection>,
@@ -146,7 +146,7 @@ pub async fn archive_many<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
 
     let response = grpc::call(
         GrpcMethod::BulkMemberOperations,
-        timeout,
+        members_admin_grpc_bulk_import_timeout,
         BulkMemberOperationsRequest { operations },
         |request| async { client.bulk_member_operations(request).await },
     )
@@ -161,13 +161,15 @@ pub async fn archive_many<MGC: MembersGrpcClient, MAGC: MembersAdminGrpcClient>(
     let mut results = ArchiveResults::default();
     for (position, member_id) in member_ids.into_iter().enumerate() {
         match outcomes.remove(&position).flatten() {
-            Some(Outcome::Archived(_) | Outcome::Unchanged(_)) => results.archived.push(member_id),
+            Some(Outcome::Archived(MemberArchived { member: Some(_) }) | Outcome::Unchanged(_)) => {
+                results.archived.push(member_id)
+            }
             Some(Outcome::Failed(MemberOperationFailed { error })) => {
                 results.failed.push(ArchiveFailure { member_id, error })
             }
             _ => results.failed.push(ArchiveFailure {
                 member_id,
-                error: "Could not confirm result. Refresh before retrying.".into(),
+                error: "Could not confirm. Try again.".into(),
             }),
         }
     }
@@ -1100,12 +1102,19 @@ mod tests {
                             },
                         )),
                     },
+                    MemberOperationResult {
+                        index: 3,
+                        outcome: Some(member_operation_result::Outcome::Archived(MemberArchived {
+                            member: None,
+                        })),
+                    },
                 ],
             }),
             ..Default::default()
         };
         let body =
-            serde_json::from_value(serde_json::json!({ "member_ids": [9, 3, 7, 3, 12] })).unwrap();
+            serde_json::from_value(serde_json::json!({ "member_ids": [9, 3, 7, 3, 12, 15] }))
+                .unwrap();
 
         let response = super::archive_many(api(admin.clone()), Ok(Json(body)))
             .await
@@ -1120,7 +1129,7 @@ mod tests {
                 _ => panic!("expected an archive operation"),
             })
             .collect();
-        assert_eq!(sent_ids, [3, 7, 9, 12]);
+        assert_eq!(sent_ids, [3, 7, 9, 12, 15]);
 
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
@@ -1129,7 +1138,8 @@ mod tests {
                 "archived": [3, 7],
                 "failed": [
                     { "member_id": 9, "error": "NotFound: member not found" },
-                    { "member_id": 12, "error": "Could not confirm result. Refresh before retrying." },
+                    { "member_id": 12, "error": "Could not confirm. Try again." },
+                    { "member_id": 15, "error": "Could not confirm. Try again." },
                 ],
             })
         );
@@ -1167,6 +1177,23 @@ mod tests {
             .into_response();
 
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn archive_many_uses_the_bulk_timeout_instead_of_the_general_one() {
+        let admin = FakeAdmin {
+            bulk_response: Outcome::Hang,
+            ..Default::default()
+        };
+        let body = serde_json::from_value(serde_json::json!({ "member_ids": [1] })).unwrap();
+
+        let started = tokio::time::Instant::now();
+        let response = super::archive_many(api(admin), Ok(Json(body)))
+            .await
+            .into_response();
+
+        assert_eq!(started.elapsed(), Duration::from_secs(15));
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
     }
 
     fn bulk_outcome() -> Outcome<BulkMemberOperationsResponse> {

@@ -40,6 +40,7 @@ export default function DatabasePage() {
     currentPage,
     pageCount,
     visibleMembers,
+    matchingMembers,
     matchingCount,
     hasSearch,
     showCreatedMember,
@@ -56,6 +57,10 @@ export default function DatabasePage() {
   const selectedMembers = allMembers.filter((member) =>
     selectedIds.has(member.member_id),
   );
+  const hiddenSelected =
+    selectedMembers.length -
+    matchingMembers.filter((member) => selectedIds.has(member.member_id))
+      .length;
   const selectedOnPage = visibleMembers.filter((member) =>
     selectedIds.has(member.member_id),
   ).length;
@@ -150,6 +155,13 @@ export default function DatabasePage() {
       {archivingMembers.length > 0 && (
         <ArchiveMembersModal
           members={archivingMembers}
+          onArchived={(memberIds) =>
+            setSelectedIds((current) => {
+              const next = new Set(current);
+              for (const memberId of memberIds) next.delete(memberId);
+              return next;
+            })
+          }
           onClose={() => setArchivingIds([])}
         />
       )}
@@ -158,13 +170,14 @@ export default function DatabasePage() {
           <Text size="sm" role="status">
             {selectedMembers.length}{" "}
             {selectedMembers.length === 1 ? "member" : "members"} selected
+            {hiddenSelected > 0 && ` (${hiddenSelected} hidden by filters)`}
           </Text>
           <Button
             color="red"
             size="xs"
             onClick={() => setArchivingIds([...selectedIds])}
           >
-            Archive All
+            Archive selected
           </Button>
           <Button
             variant="subtle"
