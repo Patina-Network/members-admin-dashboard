@@ -569,18 +569,21 @@ impl IntoResponse for UpdateResponse {
     }
 }
 
-#[derive(Debug, utoipa::IntoResponses)]
-pub enum ArchiveResponse {
-    #[response(status = 204, description = "Member archived, not permanently deleted")]
-    Success,
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct ArchiveMembers {
+    pub member_ids: Vec<i32>,
 }
 
-impl IntoResponse for ArchiveResponse {
-    fn into_response(self) -> Response {
-        match self {
-            Self::Success => StatusCode::NO_CONTENT.into_response(),
-        }
-    }
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct ArchiveFailure {
+    pub member_id: i32,
+    pub error: String,
+}
+
+#[derive(Default, Serialize, utoipa::ToSchema)]
+pub struct ArchiveResults {
+    pub archived: Vec<i32>,
+    pub failed: Vec<ArchiveFailure>,
 }
 
 #[cfg(test)]

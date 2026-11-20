@@ -49,8 +49,9 @@ export type MemberFieldsProps = {
   setDetails: (value: string | null) => void;
 };
 
-export type ArchiveMemberModalProps = {
-  member: Member;
+export type ArchiveMembersModalProps = {
+  members: Member[];
+  onArchived: (memberIds: number[]) => void;
   onClose: () => void;
 };
 
@@ -62,6 +63,8 @@ export type RoleFilterProps = {
 export type MemberTableRowProps = {
   member: Member;
   expanded: boolean;
+  selected: boolean;
+  onSelect: (selected: boolean) => void;
   onToggle: () => void;
   onEdit: (member: Member) => void;
   onArchive: (member: Member) => void;

@@ -1,4 +1,4 @@
-import { Box, Button, SimpleGrid, Table, Text } from "@mantine/core";
+import { Box, Button, Checkbox, SimpleGrid, Table, Text } from "@mantine/core";
 
 import type { MemberTableRowProps } from "@/app/database/_components/shared/types";
 
@@ -39,6 +39,8 @@ function MemberProfile({ memberId }: { memberId: number }) {
 export default function MemberTableRow({
   member,
   expanded,
+  selected,
+  onSelect,
   onToggle,
   onEdit,
   onArchive,
@@ -46,6 +48,13 @@ export default function MemberTableRow({
   return (
     <>
       <Table.Tr>
+        <Table.Td>
+          <Checkbox
+            aria-label={`Select member ${member.member_id}`}
+            checked={selected}
+            onChange={(event) => onSelect(event.currentTarget.checked)}
+          />
+        </Table.Td>
         <Table.Td>{member.member_id}</Table.Td>
         <Table.Td>{member.email}</Table.Td>
         <Table.Td>{member.first_name}</Table.Td>
@@ -89,7 +98,7 @@ export default function MemberTableRow({
       </Table.Tr>
       {expanded && (
         <Table.Tr id={`member-details-${member.member_id}`}>
-          <Table.Td colSpan={8}>
+          <Table.Td colSpan={9}>
             <Text fw={500} mb="xs">
               Additional info
             </Text>

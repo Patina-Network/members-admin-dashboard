@@ -13,7 +13,7 @@ import {
   listQueryKey,
 } from "@/lib/api/generated/@tanstack/react-query.gen";
 import {
-  archive,
+  archiveMany,
   bulkImport,
   create,
   currentSession,
@@ -210,44 +210,46 @@ export const useUpdateMemberMutation = () => {
   });
 };
 
-export const useArchiveMemberMutation = () => {
+export const useArchiveMembersMutation = () => {
   const queryClient = useQueryClient();
 
   return useMutation({
     retry: false,
-    mutationFn: async (memberId: number) => {
+    mutationFn: async (memberIds: number[]) => {
       const uncertain =
-        "Could not confirm whether the member was archived. Reload before trying again.";
+        "Could not confirm whether the members were archived. Reload before trying again.";
 
       const csrfToken = await getAdminCsrfToken("archiving");
-      const result = await archive({
-        path: { member_id: memberId },
+      const result = await archiveMany({
+        body: { member_ids: memberIds },
         headers: { "X-CSRF-Token": csrfToken },
       }).catch(() => {
         throw new Error(uncertain);
       });
 
-      if (result.response?.status !== 204) {
+      if (!result.data)
         throw new Error(
           !result.response || result.response.status >= 500 ?
             uncertain
-          : (result.error?.error ?? "Unable to archive member."),
+          : (result.error?.error ?? "Unable to archive members."),
         );
-      }
 
-      return memberId;
+      return result.data;
     },
-    onSuccess: async (memberId) => {
+    onSettled: async (data) => {
       await queryClient.cancelQueries({ queryKey: membersKey });
 
-      queryClient.setQueryData<MemberList>(membersKey, (current) => {
-        if (!current) return current;
+      const archived = new Set(data?.archived);
+      if (archived.size) {
+        queryClient.setQueryData<MemberList>(membersKey, (current) => {
+          if (!current) return current;
 
-        const members = current.members.filter(
-          (row) => row.member_id !== memberId,
-        );
-        return { members, total: members.length };
-      });
+          const members = current.members.filter(
+            (row) => !archived.has(row.member_id),
+          );
+          return { members, total: members.length };
+        });
+      }
 
       void queryClient.invalidateQueries({ queryKey: membersKey });
     },
